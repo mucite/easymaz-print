@@ -20,7 +20,7 @@ function printReceipt(data, options = {}) {
       if (err) return reject(err);
 
       try {
-        if (data.paidByCash) {
+        if (data.paidByCash && data.isPaid) {
           printer.cashdraw(2); // open drawer
         }
 
@@ -29,7 +29,7 @@ function printReceipt(data, options = {}) {
         // Header
         printer
           .align('ct')
-          .text(`TIN: ${data.tin || '0000000000'}`) // Added TIN
+          .text(`TIN: ${data.tin}`)
           .style('b')
           .size(1, 1)
           .text((data.businessName || '').toUpperCase())
@@ -39,13 +39,13 @@ function printReceipt(data, options = {}) {
           .text(`TEL: ${data.phone || ''}`)
           .newLine()
           .align('lt')
-          .text(`FS No: ${data.fsNo || ''}`)
+          .text(`Order #: ${data.fsNo || ''}`)
           .text(
             `${new Date(data.date || Date.now()).toLocaleDateString()}  ${new Date(data.date || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
           )
           .text(line48)
           .align('ct')
-          .text(`=== ${data.invoiceType || 'CASH INVOICE'} ===`)
+          .text(`=== ${data.invoiceType} ===`)
           .align('lt')
           .text(`Cashier: ${data.cashier || ''}`)
           .text(`Waiter: ${data.waiter || ''}`)
@@ -65,13 +65,14 @@ function printReceipt(data, options = {}) {
         // Totals
         printer.text(padRight('SUBTOTAL', 20) + padLeft(`${data.subtotal.toFixed(2)}`, 28));
         if (data.serviceCharge) {
-          printer.text(padRight('SURCHARGE', 20) + padLeft(`${data.serviceCharge.toFixed(2)}`, 28));
+          printer.text(padRight(`SURCHARGE ${data.serviceChargePercentage}%`, 20) + padLeft(`${data.serviceCharge.toFixed(2)}`, 28));
         }
         printer.text(padRight('TXBL1', 20) + padLeft(`${(data.subtotal + (data.serviceCharge || 0)).toFixed(2)}`, 28));
-        printer.text(padRight(`TAX1 ${data.taxRate || '15.00'}%`, 20) + padLeft(`${data.vat.toFixed(2)}`, 28));
+        printer.text(padRight(`TAX1 ${data.vatPercentage}%`, 20) + padLeft(`${data.vat.toFixed(2)}`, 28));
         printer.text(line48);
         printer.style('b').text(padRight('TOTAL', 20) + padLeft(`${data.total.toFixed(2)}`, 28)).style('normal');
-        printer.text(padRight(data.paymentMethod || 'CASH', 20) + padLeft(`${data.total.toFixed(2)}`, 28));
+        printer.text(padRight(data.paymentMethod, 20) + padLeft(`${data.total.toFixed(2)}`, 28));
+        printer.text(padRight('STATUS', 20) + padLeft(`${data.isPaid ? 'PAID' : 'UNPAID'}`, 28));
         printer.text(line48);
 
         // Footer
