@@ -1,2 +1,4 @@
 node_modules
-req.json
+config/
+.env
+.DS_Store
