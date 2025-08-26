@@ -23,8 +23,11 @@ const db = admin.firestore();
 
 logger.info('🖨️ Waiting for new print jobs...');
 
+const restaurantId = process.env.RESTAURANT_ID;
+
 db.collection('printJobs')
 	.where('status', '==', 'pending')
+	.where('restaurantId', '==', restaurantId)
 	.orderBy('createdAt', 'asc')
 	.onSnapshot((snapshot) => {
 		if (snapshot.empty) return;
