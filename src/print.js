@@ -3,7 +3,6 @@ const admin = require('firebase-admin');
 const path = require('path');
 const printReceipt = require('./helper');
 const winston = require('winston');
-const isOnline = require('is-online');
 
 const logger = winston.createLogger({
 	level: 'info',
@@ -89,7 +88,7 @@ async function startListener() {
 					}
 				}
 			}, (error) => {
-				logger.error('🔥 Firestore listener error:', error.message);
+				logger.error('🔥 Firestore listener error:', error);
 				// Remove the listener
 				if (unsubscribe) unsubscribe();
 				unsubscribe = null;
@@ -104,11 +103,15 @@ async function startListener() {
 	}
 }
 
-// Start the listener
-await startListener();
-
-process.on('SIGINT', () => {
-	if (unsubscribe) unsubscribe();
-	logger.info('Process terminated');
-	process.exit(0);
-});
+let isOnline;
+(async () => {
+	isOnline = (await import('is-online')).default;
+	
+	await startListener();
+	
+	process.on('SIGINT', () => {
+		if (unsubscribe) unsubscribe();
+		logger.info('Process terminated');
+		process.exit(0);
+	});
+})();
