@@ -46,9 +46,13 @@ function printReceipt(data, options = {}) {
         printer
           .align('ct')
           .text(`TIN: ${data.tin}`)
+          
+          .align('ct')
           .style('b')
           .size(1, 1)
           .text((data.businessName || '').toUpperCase())
+          
+          .align('ct')
           .style('normal')
           .size(0, 0)
           .text(data.address || '')
