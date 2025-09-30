@@ -13,6 +13,7 @@
     "dotenv": "^17.2.1",
     "escpos": "^3.0.0-alpha.6",
     "escpos-usb": "^3.0.0-alpha.4",
+    "find-config": "^1.0.0",
     "firebase-admin": "^13.4.0",
     "is-online": "^11.0.0",
     "pm2": "^6.0.8",

@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: require('find-config')('.env') })
 const admin = require('firebase-admin');
 const path = require('path');
 const printReceipt = require('./helper');
@@ -98,7 +98,7 @@ async function startListener() {
 			});
 		
 	} catch (err) {
-		logger.error('❌ Failed to set up listener:', err.message);
+		logger.error('❌ Failed to set up listener:', err);
 		setTimeout(startListener, 10000);
 	}
 }
