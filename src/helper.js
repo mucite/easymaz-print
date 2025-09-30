@@ -1,9 +1,10 @@
+require('dotenv').config({ path: require('find-config')('.env') })
 const escpos = require('escpos');
 const axios = require('axios');
 escpos.USB = require('escpos-usb');
 
 const LINE_LENGTH = 48;
-const API_URL = process.env.API_URL || 'http://localhost:8081';
+const API_URL = process.env.API_URL;
 
 function padRight(text, length) {
   return text.length < length ? text + ' '.repeat(length - text.length) : text;
