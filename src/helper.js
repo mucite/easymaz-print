@@ -1,10 +1,17 @@
 require('dotenv').config({ path: require('find-config')('.env') })
 const escpos = require('escpos');
 const axios = require('axios');
+
+// Import adapters
 escpos.USB = require('escpos-usb');
+escpos.Network = require('escpos-network');
+// Note: Bluetooth support requires escpos-bluetooth (optional)
 
 const LINE_LENGTH = 48;
 const API_URL = process.env.API_URL;
+const PRINTER_TYPE = process.env.PRINTER_TYPE || 'usb'; // usb, network, or bluetooth
+const PRINTER_IP = process.env.PRINTER_IP;
+const PRINTER_PORT = process.env.PRINTER_PORT || 9100;
 
 function padRight(text, length) {
   return text.length < length ? text + ' '.repeat(length - text.length) : text;
@@ -20,22 +27,70 @@ function formatDate(date) {
 }
 
 /**
+ * Get printer device based on configuration
+ * @param {object} options - Printer options
+ * @returns {object} Printer device
+ */
+function getPrinterDevice(options = {}) {
+  const printerType = options.type || PRINTER_TYPE;
+
+  switch (printerType.toLowerCase()) {
+    case 'network':
+    case 'ip':
+      const ip = options.ip || PRINTER_IP;
+      const port = options.port || PRINTER_PORT;
+      if (!ip) {
+        throw new Error('PRINTER_IP is required for network printer');
+      }
+      console.log(`Using network printer at ${ip}:${port}`);
+      return new escpos.Network(ip, port);
+
+    case 'bluetooth':
+      // Bluetooth support (requires escpos-bluetooth package)
+      const btAddress = options.address || process.env.PRINTER_BT_ADDRESS;
+      if (!btAddress) {
+        throw new Error('Bluetooth address is required for bluetooth printer');
+      }
+      console.log(`Using bluetooth printer at ${btAddress}`);
+      // Uncomment when escpos-bluetooth is installed
+      escpos.Bluetooth = require('escpos-bluetooth');
+      return new escpos.Bluetooth(btAddress);
+
+    case 'usb':
+    default:
+      const vendorId = options.vendorId;
+      const productId = options.productId;
+      console.log(`Using USB printer${vendorId ? ` (${vendorId}:${productId})` : ''}`);
+      return vendorId && productId
+        ? new escpos.USB(vendorId, productId)
+        : new escpos.USB();
+  }
+}
+
+/**
  * Print receipt and handle drawer opening only on the first print.
  * @param {object} data - Receipt data including receiptPrinted flag
- * @param {object} options - Printer options like vendorId/productId
+ * @param {object} options - Printer options (type, ip, port, vendorId, productId)
  * @returns {Promise<void>}
  */
 function printReceipt(data, options = {}) {
   return new Promise((resolve, reject) => {
-    const device = options.vendorId && options.productId
-      ? new escpos.USB(options.vendorId, options.productId)
-      : new escpos.USB();
+    let device;
+
+    try {
+      device = getPrinterDevice(options);
+    } catch (err) {
+      return reject(err);
+    }
 
     const printer = new escpos.Printer(device);
     const line48 = '-'.repeat(LINE_LENGTH);
 
     device.open(async (err) => {
-      if (err) return reject(err);
+      if (err) {
+        console.error('Failed to open printer device:', err);
+        return reject(err);
+      }
 
       try {
         // Open cash drawer only if paid by cash, paid, and NOT printed before
@@ -47,12 +102,12 @@ function printReceipt(data, options = {}) {
         printer
           .align('ct')
           .text(`TIN: ${data.tin}`)
-          
+
           .align('ct')
           .style('b')
           .size(1, 1)
           .text((data.businessName || '').toUpperCase())
-          
+
           .align('ct')
           .style('normal')
           .size(0, 0)
@@ -117,17 +172,19 @@ function printReceipt(data, options = {}) {
           .cut()
           .close(async () => {
             // After printing, if this was the first print, notify backend
-            if (data.paidByCash && data.isPaid && !data.isReceiptPrinted) {
+            if (data.paidByCash && data.isPaid && !data.isReceiptPrinted && API_URL) {
               try {
                 const url = `${API_URL}/p/orders/${data.fsNo}/mark-receipt-printed?restaurantId=${data.restaurantId}`;
                 await axios.put(url);
               } catch (apiErr) {
-                return reject(apiErr);
+                console.error('Failed to mark receipt as printed:', apiErr.message);
+                // Don't reject - print was successful
               }
             }
             resolve();
           });
       } catch (printErr) {
+        console.error('Print error:', printErr);
         reject(printErr);
       }
     });
