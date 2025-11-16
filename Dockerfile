@@ -1,30 +1,46 @@
+# ======================
+# 1. Builder Stage
+# ======================
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install build deps needed only for native escpos-usb
+RUN apk add --no-cache python3 make g++ libusb-dev eudev-dev
+
+COPY package*.json ./
+
+# Install full deps (native modules compile here)
+RUN npm install --ignore-scripts
+
+# Copy source
+COPY . .
+
+# Rebuild native deps
+RUN npm rebuild
+
+# ======================
+# 2. Runtime Stage
+# ======================
 FROM node:20-alpine
 
 WORKDIR /app
 
-# Install build dependencies for native modules
-RUN apk add --no-cache python3 make g++
+# Install ONLY required runtime libs (not the full build chain)
+RUN apk add --no-cache libusb eudev
 
-# Copy package files
-COPY package*.json ./
-
-# Install dependencies (use npm install with --omit=dev instead of ci to handle optional deps better)
-RUN npm install --omit=dev --ignore-scripts || npm install --omit=dev
-
-# Copy application files
-COPY . .
+# Bring built node_modules + source
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/*.js ./
+COPY --from=builder /app/package*.json ./
 
 # Create non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001 && \
-    chown -R nodejs:nodejs /app
-
+RUN addgroup -S nodejs && adduser -S nodejs -G nodejs
 USER nodejs
 
 EXPOSE 3001
 
-# Health check endpoint
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+  CMD node -e "require('http').get('http://localhost:3001/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
 
 CMD ["node", "server.js"]

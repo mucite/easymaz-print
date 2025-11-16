@@ -1,6 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const printReceipt = require('./src/helper');
+const printReceipt = require('./helper');
 const winston = require('winston');
 
 const app = express();
