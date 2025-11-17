@@ -3,4 +3,4 @@ node_modules
 .DS_Store
 app.log
 .idea
-keys/private-key.pem
+keys/
