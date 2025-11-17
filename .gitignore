@@ -4,3 +4,4 @@ config/
 .DS_Store
 app.log
 .idea
+keys

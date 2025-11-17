@@ -1,3 +1,6 @@
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const qz = require('qz-tray');
 const WebSocket = require('ws');
 
@@ -5,17 +8,62 @@ const PRINTER_NAME = process.env.PRINTER_NAME || 'EPSON';
 
 qz.api.setWebSocketType(WebSocket);
 
-// For QZ 2.1+ SHA-256 is built-in; SHA override only needed for 2.0.
-// If you run 2.0, uncomment this and add 'sha.js':
-// const crypto = require('crypto');
-// qz.api.setSha256Type(data => crypto.createHash('sha256').update(data).digest('hex'));
+const CERT_PATH = process.env.QZ_CERT_PATH || path.join(__dirname, '..', 'keys', 'digital-certificate.txt');
+const KEY_PATH  = process.env.QZ_KEY_PATH  || path.join(__dirname, '..', 'keys', 'private-key.pem');
 
-/**
- * Ensure websocket connection to QZ Tray
- */
+let certificateBase64;
+let privateKeyPem;
+
+try {
+    certificateBase64 = fs.readFileSync(CERT_PATH, 'utf8').trim();
+    privateKeyPem = fs.readFileSync(KEY_PATH, 'utf8');
+    console.log('[QZ] Loaded certificate and private key for signing');
+} catch (err) {
+    console.error('[QZ] ERROR loading cert/key for signing:', err.message);
+    console.error('[QZ] Silent mode will NOT work until these files are available');
+}
+
+qz.security.setCertificatePromise((resolve, reject) => {
+    if (!certificateBase64) {
+        return reject('Certificate not loaded');
+    }
+
+    resolve(certificateBase64);
+});
+
+qz.security.setSignatureAlgorithm('SHA512');
+qz.security.setSignaturePromise((toSign) => {
+    return (resolve, reject) => {
+        if (!privateKeyPem) {
+            return reject('Private key not loaded');
+        }
+
+        try {
+            const signer = crypto.createSign('RSA-SHA512');
+            signer.update(toSign);
+            signer.end();
+            const signature = signer.sign(privateKeyPem, 'base64');
+            resolve(signature);
+        } catch (err) {
+            console.error('[QZ] Error signing message:', err);
+            reject(err);
+        }
+    };
+});
+
 async function ensureConnected() {
     if (qz.websocket.isActive()) return;
-    await qz.websocket.connect();
+
+    const host = process.env.QZ_HOST || 'localhost';
+    const port = process.env.QZ_PORT && Number(process.env.QZ_PORT) || 8182;
+    await qz.websocket.connect({
+        host: host,
+        port: {
+            insecure: Array.of(port),
+        },
+        retries: 3,
+        delay: 1
+    });
 }
 
 /**

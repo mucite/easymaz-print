@@ -8,6 +8,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY src ./src
+COPY keys ./keys
 
 # Create non-root user
 RUN addgroup -S nodejs && adduser -S nodejs -G nodejs \
