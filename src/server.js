@@ -8,6 +8,10 @@ const PORT = process.env.PORT || 3001;
 
 app.use(express.json());
 
+app.get("/health", (req, res) => {
+    res.status(200).json({ status: "ok" });
+});
+
 app.post('/print', async (req, res) => {
     const parsed = PrintPayloadSchema.safeParse(req.body);
     if (!parsed.success) {
