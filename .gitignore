@@ -1,7 +1,6 @@
 node_modules
-config/
 .env
 .DS_Store
 app.log
 .idea
-keys
+keys/
