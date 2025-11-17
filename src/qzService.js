@@ -122,7 +122,9 @@ function buildEscposData(receipt, opts = {}) {
     const serviceAmount = receipt.serviceCharge ?? (subtotal * svcPct / 100);
     const vatAmount     = receipt.vat ?? (subtotal * vatPct / 100);
 
-    const convenienceFee = Number(receipt.convenienceFee || 0);
+    const convenienceFee =
+        Number(receipt.convenienceFee || 0) +
+        Number(receipt.roundingDifference || 0);
 
     const computedTotal =
         subtotal + serviceAmount + vatAmount + convenienceFee;
