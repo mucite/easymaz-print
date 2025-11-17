@@ -8,8 +8,11 @@ const PRINTER_NAME = process.env.PRINTER_NAME || 'EPSON';
 
 qz.api.setWebSocketType(WebSocket);
 
-const CERT_PATH = process.env.QZ_CERT_PATH || path.join(__dirname, '..', 'keys', 'digital-certificate.txt');
-const KEY_PATH  = process.env.QZ_KEY_PATH  || path.join(__dirname, '..', 'keys', 'private-key.pem');
+const CERT_PATH = process.env.QZ_CERT_PATH ||
+    path.resolve(__dirname, "../keys/digital-certificate.txt");
+
+const KEY_PATH = process.env.QZ_KEY_PATH ||
+    path.resolve(__dirname, "../keys/private-key.pem");
 
 let certificateBase64;
 let privateKeyPem;
@@ -54,7 +57,7 @@ qz.security.setSignaturePromise((toSign) => {
 async function ensureConnected() {
     if (qz.websocket.isActive()) return;
 
-    const host = process.env.QZ_HOST || 'localhost';
+    const host = process.env.QZ_HOST || 'host.docker.internal';
     const port = process.env.QZ_PORT && Number(process.env.QZ_PORT) || 8182;
     await qz.websocket.connect({
         host: host,
