@@ -7,7 +7,7 @@ const PrintItemSchema = z.object({
 });
 
 const PrintPayloadSchema = z.object({
-    tin: z.number(), // you had "number" in TS, if it's string in JSON, change to z.string()
+    tin: z.number(),
     businessName: z.string().min(1, 'Business name is required'),
     address: z.string().min(1, 'Address is required'),
     phone: z.string().min(1, 'Phone is required'),
@@ -17,7 +17,7 @@ const PrintPayloadSchema = z.object({
     invoiceType: z.string().min(1, 'Invoice type is required'),
     cashier: z.string().min(1, 'Cashier is required'),
     waiter: z.string().min(1, 'Waiter is required'),
-    table: z.string().min(1, 'Table is required'),
+    table: z.number(),
 
     items: z.array(PrintItemSchema).min(1, 'At least one item is required'),
 
@@ -39,7 +39,6 @@ const PrintPayloadSchema = z.object({
     restaurantId: z.string().min(1, 'Restaurant ID is required'),
     isReceiptPrinted: z.boolean(),
 
-    checkOutUrl: z.string().optional(),
     paymentStatus: z.string().optional(),
     isReadOnlyMode: z.boolean().optional()
 });
