@@ -153,7 +153,13 @@ function buildEscposData(receipt, opts = {}) {
 
     const formatTotalLine = (label, amount) => {
         const l = String(label);
-        const r = fmt(amount);
+        const n = Number(amount);
+
+        if (!Number.isFinite(n)) {
+            return l + "\n";
+        }
+
+        const r = fmt(n);
         const spaces = Math.max(1, LINE_WIDTH - l.length - r.length);
         return l + " ".repeat(spaces) + r + "\n";
     };
