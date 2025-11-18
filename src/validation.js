@@ -7,7 +7,7 @@ const PrintItemSchema = z.object({
 });
 
 const PrintPayloadSchema = z.object({
-    tin: z.number(),
+    tin: z.string().min(10, 'TIN is required'),
     businessName: z.string().min(1, 'Business name is required'),
     address: z.string().min(1, 'Address is required'),
     phone: z.string().min(1, 'Phone is required'),
