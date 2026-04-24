@@ -17,7 +17,7 @@ const PrintPayloadSchema = z.object({
     invoiceType: z.string().min(1, 'Invoice type is required'),
     cashier: z.string().min(1, 'Cashier is required'),
     waiter: z.string().min(1, 'Waiter is required'),
-    table: z.number(),
+    table: z.number().nullable().optional(),
 
     items: z.array(PrintItemSchema).min(1, 'At least one item is required'),
 
