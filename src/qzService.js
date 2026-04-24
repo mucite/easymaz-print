@@ -1,76 +1,11 @@
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const qz = require('qz-tray');
-const WebSocket = require('ws');
+const net = require('net');
 
-const PRINTER_NAME = process.env.PRINTER_NAME || 'EPSON';
-
-qz.api.setWebSocketType(WebSocket);
-
-const CERT_PATH = process.env.QZ_CERT_PATH ||
-    path.resolve(__dirname, "../keys/digital-certificate.txt");
-
-const KEY_PATH = process.env.QZ_KEY_PATH ||
-    path.resolve(__dirname, "../keys/private-key.pem");
-
-let certificateBase64;
-let privateKeyPem;
-
-try {
-    certificateBase64 = fs.readFileSync(CERT_PATH, 'utf8').trim();
-    privateKeyPem = fs.readFileSync(KEY_PATH, 'utf8');
-    console.log('[QZ] Loaded certificate and private key for signing');
-} catch (err) {
-    console.error('[QZ] ERROR loading cert/key for signing:', err.message);
-    console.error('[QZ] Silent mode will NOT work until these files are available');
-}
-
-qz.security.setCertificatePromise((resolve, reject) => {
-    if (!certificateBase64) {
-        return reject('Certificate not loaded');
-    }
-
-    resolve(certificateBase64);
-});
-
-qz.security.setSignatureAlgorithm('SHA512');
-qz.security.setSignaturePromise((toSign) => {
-    return (resolve, reject) => {
-        if (!privateKeyPem) {
-            return reject('Private key not loaded');
-        }
-
-        try {
-            const signer = crypto.createSign('RSA-SHA512');
-            signer.update(toSign);
-            signer.end();
-            const signature = signer.sign(privateKeyPem, 'base64');
-            resolve(signature);
-        } catch (err) {
-            console.error('[QZ] Error signing message:', err);
-            reject(err);
-        }
-    };
-});
-
-async function ensureConnected() {
-    if (qz.websocket.isActive()) return;
-
-    const host = process.env.QZ_HOST || 'host.docker.internal';
-    const port = process.env.QZ_PORT && Number(process.env.QZ_PORT) || 8182;
-    await qz.websocket.connect({
-        host: host,
-        port: {
-            insecure: Array.of(port),
-        },
-        retries: 3,
-        delay: 1
-    });
-}
+const PRINTER_HOST = process.env.PRINTER_HOST || '127.0.0.1';
+const PRINTER_PORT = Number(process.env.PRINTER_PORT) || 9100;
+const CONNECT_TIMEOUT_MS = Number(process.env.PRINTER_TIMEOUT_MS) || 5000;
 
 /**
- * Build an ESC / POS data array from a PrintPayload object.
+ * Build an ESC/POS data array from a PrintPayload object.
  * Options:
  *   lineWidth: chars per line (32, 42, 48...) default 32
  *   autoCut: whether to send cut command (GS V 1)
@@ -143,7 +78,6 @@ function buildEscposData(receipt, opts = {}) {
         const result = [];
         result.push(`${n} ${q} ${u} ${t}\n`);
 
-        // extra name-only lines
         for (let i = 1; i < wrapped.length; i++) {
             result.push(wrapped[i].slice(0, LINE_WIDTH) + "\n");
         }
@@ -189,10 +123,9 @@ function buildEscposData(receipt, opts = {}) {
     const total = receipt.total ?? computedTotal;
 
     // ---------- PRINT START ----------
-    lines.push(ESC + "@"); // reset
-    lines.push(ESC + "a" + "\x01"); // center
+    lines.push(ESC + "@");          // initialize printer
+    lines.push(ESC + "a" + "\x01"); // center align
 
-    // Business name bold
     lines.push(ESC + "E" + "\x01");
     centerLines(String(receipt.businessName).toUpperCase()).forEach(l => lines.push(l));
     lines.push(ESC + "E" + "\x00");
@@ -207,7 +140,6 @@ function buildEscposData(receipt, opts = {}) {
     lines.push("\n");
     lines.push(ESC + "a" + "\x00"); // left align
 
-    // meta
     if (receipt.fsNo)        lines.push(formatInfoLine("Invoice", receipt.fsNo));
     if (receipt.orderNumber) lines.push(formatInfoLine("Order", receipt.orderNumber));
     if (receipt.invoiceType) lines.push(formatInfoLine("Type", receipt.invoiceType));
@@ -218,7 +150,6 @@ function buildEscposData(receipt, opts = {}) {
 
     lines.push(repeat("-", LINE_WIDTH) + "\n");
 
-    // item header
     lines.push(itemHeader());
     lines.push(repeat("-", LINE_WIDTH) + "\n");
 
@@ -229,7 +160,6 @@ function buildEscposData(receipt, opts = {}) {
 
     lines.push(repeat("-", LINE_WIDTH) + "\n");
 
-    // totals
     lines.push(formatTotalLine("SUBTOTAL", subtotal));
 
     if (serviceAmount) {
@@ -254,7 +184,6 @@ function buildEscposData(receipt, opts = {}) {
 
     lines.push("\n");
 
-    // payment
     let paymentLabel = receipt.paidByCash
         ? "CASH"
         : receipt.paymentMethod || "";
@@ -270,7 +199,6 @@ function buildEscposData(receipt, opts = {}) {
     if (receipt.paymentStatus)
         lines.push(`Status: ${receipt.paymentStatus}\n`);
 
-    // footer
     lines.push("\n");
     lines.push(ESC + "a" + "\x01"); // center
     centerLines("Thank you!").forEach(l => lines.push(l));
@@ -279,29 +207,58 @@ function buildEscposData(receipt, opts = {}) {
     lines.push("\n".repeat(FEED_LINES));
 
     if (AUTO_CUT) {
-        lines.push(GS + "V" + "\x01");
-        lines.push("\n");
+        lines.push(GS + "V" + "\x01"); // full cut
     }
 
     return lines;
 }
 
 /**
- * Print a receipt via QZ Tray
+ * Print a receipt by opening a raw TCP socket to the printer (port 9100).
+ * Works with any ESC/POS-compatible thermal printer (Epson, Star, Bixolon, etc.).
+ * Configure via PRINTER_HOST / PRINTER_PORT environment variables.
  */
-async function printReceipt(receipt) {
-    await ensureConnected();
-
-    // Create config for a specific printer
-    const config = qz.configs.create(PRINTER_NAME);
+function printReceipt(receipt) {
     const data = buildEscposData(receipt, {
         lineWidth: 48,
         autoCut: true,
         feedLines: 4
     });
 
-    // QZ raw printing: just pass the array of strings (ESC/POS commands)
-    await qz.print(config, data);
+    // latin1 encodes each character as a single byte — required for raw ESC/POS
+    const rawBuffer = Buffer.from(data.join(''), 'latin1');
+
+    return new Promise((resolve, reject) => {
+        let settled = false;
+
+        const done = (err) => {
+            if (settled) return;
+            settled = true;
+            err ? reject(err) : resolve();
+        };
+
+        const socket = new net.Socket();
+        socket.setTimeout(CONNECT_TIMEOUT_MS);
+
+        socket.on('timeout', () => {
+            socket.destroy();
+            done(new Error(`Printer timed out connecting to ${PRINTER_HOST}:${PRINTER_PORT}`));
+        });
+
+        socket.on('error', (err) => {
+            done(new Error(`Printer socket error: ${err.message}`));
+        });
+
+        // close fires after error too; the settled guard prevents double-settling
+        socket.on('close', () => done(null));
+
+        socket.connect(PRINTER_PORT, PRINTER_HOST, () => {
+            socket.write(rawBuffer, (err) => {
+                if (err) return done(new Error(`Printer write error: ${err.message}`));
+                socket.end(); // graceful shutdown — printer receives all bytes before FIN
+            });
+        });
+    });
 }
 
 module.exports = { printReceipt };
