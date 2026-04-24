@@ -42,9 +42,11 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 app.get('/health', (req, res) => {
-  const printer = process.env.PRINTER_DEVICE
-    ? { mode: 'usb', device: process.env.PRINTER_DEVICE }
-    : { mode: 'tcp', address: `${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}` };
+  const printer = process.env.PRINTER_CMD
+    ? { mode: 'cmd', command: process.env.PRINTER_CMD }
+    : process.env.PRINTER_DEVICE
+      ? { mode: 'usb', device: process.env.PRINTER_DEVICE }
+      : { mode: 'tcp', address: `${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}` };
 
   res.status(200).json({ status: 'ok', tls: !!(SSL_CERT && SSL_KEY), printer });
 });
@@ -69,7 +71,9 @@ app.post('/print', async (req, res) => {
 });
 
 function logPrinterTarget() {
-  if (process.env.PRINTER_DEVICE) {
+  if (process.env.PRINTER_CMD) {
+    console.log(`[easymaz-print] Printer CMD  ${process.env.PRINTER_CMD}`);
+  } else if (process.env.PRINTER_DEVICE) {
     console.log(`[easymaz-print] Printer USB  ${process.env.PRINTER_DEVICE}`);
   } else {
     console.log(`[easymaz-print] Printer TCP  ${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}`);

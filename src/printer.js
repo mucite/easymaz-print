@@ -1,7 +1,15 @@
-const net = require('net');
-const fs  = require('fs');
+const net    = require('net');
+const fs     = require('fs');
+const { spawn } = require('child_process');
 
-const PRINTER_DEVICE    = process.env.PRINTER_DEVICE;           // e.g. /dev/usb/lp0  or  \\.\USB001
+// Mac/Linux CUPS:  PRINTER_CMD=lp -d "TM-T88V" -o raw -
+// Linux pipe:      PRINTER_CMD=cat > /dev/usb/lp0   (alternative to PRINTER_DEVICE)
+const PRINTER_CMD       = process.env.PRINTER_CMD;
+
+// Linux/Windows raw device file: /dev/usb/lp0  or  \\.\USB001
+const PRINTER_DEVICE    = process.env.PRINTER_DEVICE;
+
+// Network printer (TCP port 9100)
 const PRINTER_HOST      = process.env.PRINTER_HOST || '127.0.0.1';
 const PRINTER_PORT      = Number(process.env.PRINTER_PORT) || 9100;
 const CONNECT_TIMEOUT_MS = Number(process.env.PRINTER_TIMEOUT_MS) || 5000;
@@ -215,6 +223,29 @@ function buildEscposData(receipt, opts = {}) {
     return lines;
 }
 
+// ---------- CUPS / shell command (Mac + Linux) ----------
+function printViaCommand(rawBuffer) {
+    return new Promise((resolve, reject) => {
+        // Split on spaces but keep quoted strings intact
+        const parts = PRINTER_CMD.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+        const [cmd, ...args] = parts.map(p => p.replace(/^['"]|['"]$/g, ''));
+
+        const proc = spawn(cmd, args, { stdio: ['pipe', 'inherit', 'inherit'] });
+
+        proc.on('error', (err) =>
+            reject(new Error(`Print command failed: ${err.message}`))
+        );
+        proc.on('close', (code) => {
+            code === 0
+                ? resolve()
+                : reject(new Error(`Print command exited with code ${code}`));
+        });
+
+        proc.stdin.write(rawBuffer);
+        proc.stdin.end();
+    });
+}
+
 // ---------- USB device file (Linux/Mac: /dev/usb/lp0, Windows: \\.\USB001) ----------
 function printViaDevice(rawBuffer) {
     return new Promise((resolve, reject) => {
@@ -282,7 +313,9 @@ function printReceipt(receipt) {
     // latin1 encodes each character as a single byte — required for raw ESC/POS
     const rawBuffer = Buffer.from(data.join(''), 'latin1');
 
-    return PRINTER_DEVICE ? printViaDevice(rawBuffer) : printViaTcp(rawBuffer);
+    if (PRINTER_CMD)    return printViaCommand(rawBuffer);
+    if (PRINTER_DEVICE) return printViaDevice(rawBuffer);
+    return printViaTcp(rawBuffer);
 }
 
 module.exports = { printReceipt };
