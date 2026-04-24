@@ -10,6 +10,7 @@
   "license": "ISC",
   "description": "print receipts via raw TCP ESC/POS",
   "dependencies": {
+    "dotenv": "^17.4.2",
     "express": "^4.18.2",
     "zod": "^4.1.12"
   }
