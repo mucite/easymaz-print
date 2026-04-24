@@ -40,7 +40,8 @@ const PrintPayloadSchema = z.object({
     isReceiptPrinted: z.boolean(),
 
     paymentStatus: z.string().optional(),
-    isReadOnlyMode: z.boolean().optional()
+    isReadOnlyMode: z.boolean().optional(),
+    jobId: z.string().optional()
 });
 
 module.exports = {

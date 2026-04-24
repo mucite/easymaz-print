@@ -44,6 +44,28 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+// Deduplication: track recently printed jobIds to prevent duplicate thermal prints
+// when a retry fires after a successful-but-timed-out response.
+const recentJobs = new Map(); // jobId -> timestamp
+const DEDUP_WINDOW_MS = 5 * 60 * 1000;
+
+function isDuplicate(jobId) {
+  if (!jobId) return false;
+  const ts = recentJobs.get(jobId);
+  return ts != null && (Date.now() - ts) < DEDUP_WINDOW_MS;
+}
+
+function markPrinted(jobId) {
+  if (!jobId) return;
+  recentJobs.set(jobId, Date.now());
+  if (recentJobs.size > 500) {
+    const cutoff = Date.now() - DEDUP_WINDOW_MS;
+    for (const [id, ts] of recentJobs) {
+      if (ts < cutoff) recentJobs.delete(id);
+    }
+  }
+}
+
 app.get('/health', (req, res) => {
   const printer = process.env.PRINTER_CMD
     ? { mode: 'cmd', command: process.env.PRINTER_CMD }
@@ -64,8 +86,16 @@ app.post('/print', async (req, res) => {
     return res.status(400).json({ success: false, errors });
   }
 
+  const { jobId, ...printData } = parsed.data;
+
+  if (isDuplicate(jobId)) {
+    console.log(`[dedup] Skipping duplicate job ${jobId}`);
+    return res.json({ success: true, message: 'duplicate, already printed' });
+  }
+
   try {
-    await printReceipt(parsed.data);
+    await printReceipt(printData);
+    markPrinted(jobId);
     return res.json({ success: true });
   } catch (err) {
     console.error('Print error:', err);

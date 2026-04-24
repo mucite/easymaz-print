@@ -4,3 +4,4 @@ node_modules
 app.log
 .idea
 keys/
+pi.env
