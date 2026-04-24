@@ -1,0 +1,21 @@
+[Unit]
+Description=EasyMaz Print Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/easymaz-print
+EnvironmentFile=/etc/easymaz-print/pi.env
+ExecStart=/bin/bash /opt/easymaz-print/scripts/start.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Give the 4G modem time to connect before starting
+ExecStartPre=/bin/sleep 5
+
+[Install]
+WantedBy=multi-user.target
