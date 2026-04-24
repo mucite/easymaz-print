@@ -2,7 +2,7 @@ const express = require('express');
 const https   = require('https');
 const http    = require('http');
 const fs      = require('fs');
-const { printReceipt } = require('./qzService');
+const { printReceipt } = require('./printer');
 const { PrintPayloadSchema } = require('./validation');
 
 const app  = express();
