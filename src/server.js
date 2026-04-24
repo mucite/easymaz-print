@@ -42,11 +42,11 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    tls: !!(SSL_CERT && SSL_KEY),
-    printer: `${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}`
-  });
+  const printer = process.env.PRINTER_DEVICE
+    ? { mode: 'usb', device: process.env.PRINTER_DEVICE }
+    : { mode: 'tcp', address: `${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}` };
+
+  res.status(200).json({ status: 'ok', tls: !!(SSL_CERT && SSL_KEY), printer });
 });
 
 app.post('/print', async (req, res) => {
@@ -68,6 +68,14 @@ app.post('/print', async (req, res) => {
   }
 });
 
+function logPrinterTarget() {
+  if (process.env.PRINTER_DEVICE) {
+    console.log(`[easymaz-print] Printer USB  ${process.env.PRINTER_DEVICE}`);
+  } else {
+    console.log(`[easymaz-print] Printer TCP  ${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}`);
+  }
+}
+
 function startServer() {
   if (SSL_CERT && SSL_KEY) {
     let cert, key;
@@ -82,13 +90,13 @@ function startServer() {
 
     https.createServer({ cert, key }, app).listen(PORT, '0.0.0.0', () => {
       console.log(`[easymaz-print] HTTPS  https://0.0.0.0:${PORT}`);
-      console.log(`[easymaz-print] Printer ${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}`);
+      logPrinterTarget();
       console.log('[easymaz-print] TLS enabled — works offline on LAN');
     });
   } else {
     http.createServer(app).listen(PORT, '0.0.0.0', () => {
       console.log(`[easymaz-print] HTTP   http://0.0.0.0:${PORT}`);
-      console.log(`[easymaz-print] Printer ${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}`);
+      logPrinterTarget();
       console.log('[easymaz-print] No TLS — only works from localhost (set SSL_CERT_PATH + SSL_KEY_PATH for LAN access)');
     });
   }

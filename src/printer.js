@@ -1,7 +1,9 @@
 const net = require('net');
+const fs  = require('fs');
 
-const PRINTER_HOST = process.env.PRINTER_HOST || '127.0.0.1';
-const PRINTER_PORT = Number(process.env.PRINTER_PORT) || 9100;
+const PRINTER_DEVICE    = process.env.PRINTER_DEVICE;           // e.g. /dev/usb/lp0  or  \\.\USB001
+const PRINTER_HOST      = process.env.PRINTER_HOST || '127.0.0.1';
+const PRINTER_PORT      = Number(process.env.PRINTER_PORT) || 9100;
 const CONNECT_TIMEOUT_MS = Number(process.env.PRINTER_TIMEOUT_MS) || 5000;
 
 /**
@@ -213,21 +215,32 @@ function buildEscposData(receipt, opts = {}) {
     return lines;
 }
 
-/**
- * Print a receipt by opening a raw TCP socket to the printer (port 9100).
- * Works with any ESC/POS-compatible thermal printer (Epson, Star, Bixolon, etc.).
- * Configure via PRINTER_HOST / PRINTER_PORT environment variables.
- */
-function printReceipt(receipt) {
-    const data = buildEscposData(receipt, {
-        lineWidth: 48,
-        autoCut: true,
-        feedLines: 4
+// ---------- USB device file (Linux/Mac: /dev/usb/lp0, Windows: \\.\USB001) ----------
+function printViaDevice(rawBuffer) {
+    return new Promise((resolve, reject) => {
+        // 'a' flag — non-destructive append; avoids truncating the device
+        const stream = fs.createWriteStream(PRINTER_DEVICE, { flags: 'a' });
+        let settled = false;
+
+        const done = (err) => {
+            if (settled) return;
+            settled = true;
+            err ? reject(err) : resolve();
+        };
+
+        stream.on('error', (err) =>
+            done(new Error(`USB device error (${PRINTER_DEVICE}): ${err.message}`))
+        );
+        stream.write(rawBuffer, (err) => {
+            if (err) return done(new Error(`USB write error: ${err.message}`));
+            stream.end();
+        });
+        stream.on('close', () => done(null));
     });
+}
 
-    // latin1 encodes each character as a single byte — required for raw ESC/POS
-    const rawBuffer = Buffer.from(data.join(''), 'latin1');
-
+// ---------- TCP socket (network printer on port 9100) ----------
+function printViaTcp(rawBuffer) {
     return new Promise((resolve, reject) => {
         let settled = false;
 
@@ -244,21 +257,32 @@ function printReceipt(receipt) {
             socket.destroy();
             done(new Error(`Printer timed out connecting to ${PRINTER_HOST}:${PRINTER_PORT}`));
         });
-
-        socket.on('error', (err) => {
-            done(new Error(`Printer socket error: ${err.message}`));
-        });
-
-        // close fires after error too; the settled guard prevents double-settling
+        socket.on('error', (err) =>
+            done(new Error(`Printer socket error: ${err.message}`))
+        );
         socket.on('close', () => done(null));
 
         socket.connect(PRINTER_PORT, PRINTER_HOST, () => {
             socket.write(rawBuffer, (err) => {
                 if (err) return done(new Error(`Printer write error: ${err.message}`));
-                socket.end(); // graceful shutdown — printer receives all bytes before FIN
+                socket.end();
             });
         });
     });
+}
+
+// ---------- public entry point ----------
+function printReceipt(receipt) {
+    const data = buildEscposData(receipt, {
+        lineWidth: 48,
+        autoCut: true,
+        feedLines: 4
+    });
+
+    // latin1 encodes each character as a single byte — required for raw ESC/POS
+    const rawBuffer = Buffer.from(data.join(''), 'latin1');
+
+    return PRINTER_DEVICE ? printViaDevice(rawBuffer) : printViaTcp(rawBuffer);
 }
 
 module.exports = { printReceipt };
