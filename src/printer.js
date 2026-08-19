@@ -56,8 +56,8 @@ function buildEscposData(receipt, opts = {}) {
 
     const formatInfoLine = (label, value) => {
         const left = (label + " : ");
-        // Zero is a value, not an absence: table 0 is a real table now that takeaway has
-        // moved off it, and `value || ""` printed its line with the number missing.
+        // Zero is a value, not an absence: `value || ""` printed the line with the number
+        // missing.
         const val = value === null || value === undefined ? "" : String(value);
         const spaces = Math.max(1, LINE_WIDTH - left.length - val.length);
         return left + " ".repeat(spaces) + val + "\n";
@@ -156,10 +156,9 @@ function buildEscposData(receipt, opts = {}) {
     if (receipt.orderNumber) lines.push(formatInfoLine("Order", receipt.orderNumber));
     if (receipt.invoiceType) lines.push(formatInfoLine("Type", receipt.invoiceType));
     if (receipt.date)        lines.push(formatInfoLine("Date", receipt.date));
-    // Takeaway prints the word where the table number goes. Tested for presence rather than
-    // truthiness, so table 0 — a real table since takeaway moved off it — still prints.
-    if (receipt.isTakeaway)        lines.push(formatInfoLine("Table", "TAKEAWAY"));
-    else if (receipt.table != null) lines.push(formatInfoLine("Table", receipt.table));
+    // Presence, not truthiness: a table number is printed even when it is zero, which
+    // `value || ""` would have dropped.
+    if (receipt.table != null) lines.push(formatInfoLine("Table", receipt.table));
     if (receipt.cashier)     lines.push(formatInfoLine("Cashier", receipt.cashier));
     if (receipt.waiter)      lines.push(formatInfoLine("Waiter", receipt.waiter));
 

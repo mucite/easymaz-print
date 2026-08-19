@@ -19,13 +19,6 @@ const PrintPayloadSchema = z.object({
     waiter: z.string().min(1, 'Waiter is required'),
     table: z.number().nullable().optional(),
 
-    /**
-     * Takeaway is collected rather than carried to a table, so the receipt says so instead of
-     * naming one. A flag rather than something inferred from `table`: the number takeaway used
-     * to be booked against is now an ordinary table in the dining room.
-     */
-    isTakeaway: z.boolean().optional(),
-
     items: z.array(PrintItemSchema).min(1, 'At least one item is required'),
 
     subtotal: z.number().nonnegative('Subtotal must be >= 0'),
