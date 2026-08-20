@@ -12,6 +12,73 @@ const PRINTER_DEVICE    = process.env.PRINTER_DEVICE;
 // Network printer (TCP port 9100)
 const PRINTER_HOST      = process.env.PRINTER_HOST || '127.0.0.1';
 const PRINTER_PORT      = Number(process.env.PRINTER_PORT) || 9100;
+
+/**
+ * Named printers, for a site with more than one.
+ *
+ * A restaurant has one printer at the till and that is the whole story. A hotel does not: food
+ * goes to the kitchen, drinks to the bar, a folio to reception, and a single destination means
+ * somebody carries paper across the building all evening. That is the thing that stops this
+ * being sold to a hotel — not the number of boxes.
+ *
+ * PRINTERS=kitchen=192.168.1.50:9100,bar=192.168.1.51,reception=192.168.1.52:9100
+ *
+ * A plain list rather than JSON because it is typed into an env file by whoever is standing at
+ * the router, and JSON quoting inside an env file is a good way to lose an evening. The port is
+ * optional and defaults to 9100, which is what every ESC/POS box on a LAN uses.
+ */
+function parseStations(spec) {
+    const stations = {};
+    if (!spec) return stations;
+
+    for (const entry of spec.split(',')) {
+        const trimmed = entry.trim();
+        if (!trimmed) continue;
+
+        const eq = trimmed.indexOf('=');
+        if (eq < 1) {
+            console.warn(`[printer] ignoring malformed PRINTERS entry: ${trimmed}`);
+            continue;
+        }
+
+        const name = trimmed.slice(0, eq).trim().toLowerCase();
+        const target = trimmed.slice(eq + 1).trim();
+        const colon = target.lastIndexOf(':');
+        const host = colon > 0 ? target.slice(0, colon) : target;
+        const port = colon > 0 ? Number(target.slice(colon + 1)) : 9100;
+
+        if (!host || !Number.isInteger(port) || port <= 0) {
+            console.warn(`[printer] ignoring PRINTERS entry with no usable address: ${trimmed}`);
+            continue;
+        }
+        stations[name] = { host, port };
+    }
+    return stations;
+}
+
+const STATIONS = parseStations(process.env.PRINTERS);
+
+/**
+ * Where a ticket goes.
+ *
+ * An unknown station falls back to the default printer and says so, rather than refusing. A
+ * ticket printed in the wrong room is confusing; a ticket that prints nowhere is an order the
+ * kitchen never sees, and the default is the till printer where most tickets belong anyway.
+ */
+function resolveStation(station) {
+    if (!station) {
+        return { host: PRINTER_HOST, port: PRINTER_PORT, name: 'default' };
+    }
+    const found = STATIONS[String(station).toLowerCase()];
+    if (!found) {
+        console.warn(
+            `[printer] unknown station "${station}" — printing to the default instead. ` +
+            `Configured: ${Object.keys(STATIONS).join(', ') || '(none)'}`
+        );
+        return { host: PRINTER_HOST, port: PRINTER_PORT, name: 'default' };
+    }
+    return { ...found, name: String(station).toLowerCase() };
+}
 const CONNECT_TIMEOUT_MS = Number(process.env.PRINTER_TIMEOUT_MS) || 5000;
 
 /**
@@ -275,7 +342,8 @@ function printViaDevice(rawBuffer) {
 }
 
 // ---------- TCP socket (network printer on port 9100) ----------
-function printViaTcp(rawBuffer) {
+function printViaTcp(rawBuffer, target) {
+    const { host, port, name } = target;
     return new Promise((resolve, reject) => {
         let settled = false;
 
@@ -290,14 +358,14 @@ function printViaTcp(rawBuffer) {
 
         socket.on('timeout', () => {
             socket.destroy();
-            done(new Error(`Printer timed out connecting to ${PRINTER_HOST}:${PRINTER_PORT}`));
+            done(new Error(`Printer "${name}" timed out connecting to ${host}:${port}`));
         });
         socket.on('error', (err) =>
-            done(new Error(`Printer socket error: ${err.message}`))
+            done(new Error(`Printer "${name}" (${host}:${port}) socket error: ${err.message}`))
         );
         socket.on('close', () => done(null));
 
-        socket.connect(PRINTER_PORT, PRINTER_HOST, () => {
+        socket.connect(port, host, () => {
             socket.write(rawBuffer, (err) => {
                 if (err) return done(new Error(`Printer write error: ${err.message}`));
                 socket.end();
@@ -307,7 +375,7 @@ function printViaTcp(rawBuffer) {
 }
 
 // ---------- public entry point ----------
-function printReceipt(receipt) {
+function printReceipt(receipt, station) {
     const data = buildEscposData(receipt, {
         lineWidth: 48,
         autoCut: true,
@@ -317,9 +385,18 @@ function printReceipt(receipt) {
     // latin1 encodes each character as a single byte — required for raw ESC/POS
     const rawBuffer = Buffer.from(data.join(''), 'latin1');
 
-    if (PRINTER_CMD)    return printViaCommand(rawBuffer);
-    if (PRINTER_DEVICE) return printViaDevice(rawBuffer);
-    return printViaTcp(rawBuffer);
+    // A command or a USB device is one physical printer by definition, so a station cannot mean
+    // anything there. Worth saying out loud rather than ignoring silently.
+    if (PRINTER_CMD || PRINTER_DEVICE) {
+        if (station) {
+            console.warn(
+                `[printer] station "${station}" ignored: PRINTER_CMD/PRINTER_DEVICE addresses one printer`
+            );
+        }
+        return PRINTER_CMD ? printViaCommand(rawBuffer) : printViaDevice(rawBuffer);
+    }
+
+    return printViaTcp(rawBuffer, resolveStation(station));
 }
 
-module.exports = { printReceipt };
+module.exports = { printReceipt, parseStations, resolveStation, stations: () => STATIONS };

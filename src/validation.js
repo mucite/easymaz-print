@@ -19,6 +19,10 @@ const PrintPayloadSchema = z.object({
     waiter: z.string().min(1, 'Waiter is required'),
     table: z.number().nullable().optional(),
 
+    // Which printer this ticket belongs at — kitchen, bar, reception. Absent means the default,
+    // which is the whole configuration for a restaurant with one printer at the till.
+    station: z.string().min(1).optional(),
+
     items: z.array(PrintItemSchema).min(1, 'At least one item is required'),
 
     subtotal: z.number().nonnegative('Subtotal must be >= 0'),

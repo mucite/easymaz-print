@@ -3,7 +3,7 @@ const express = require('express');
 const https   = require('https');
 const http    = require('http');
 const fs      = require('fs');
-const { printReceipt } = require('./printer');
+const { printReceipt, stations } = require('./printer');
 const { PrintPayloadSchema } = require('./validation');
 
 const app  = express();
@@ -73,7 +73,14 @@ app.get('/health', (req, res) => {
       ? { mode: 'usb', device: process.env.PRINTER_DEVICE }
       : { mode: 'tcp', address: `${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}` };
 
-  res.status(200).json({ status: 'ok', tls: !!(SSL_CERT && SSL_KEY), printer });
+  // The configured stations are reported so an installer can confirm what the box thinks it has
+  // without printing a test ticket at every one of them.
+  const configured = stations();
+  const named = Object.fromEntries(
+    Object.entries(configured).map(([name, t]) => [name, `${t.host}:${t.port}`])
+  );
+
+  res.status(200).json({ status: 'ok', tls: !!(SSL_CERT && SSL_KEY), printer, stations: named });
 });
 
 app.post('/print', async (req, res) => {
@@ -86,7 +93,7 @@ app.post('/print', async (req, res) => {
     return res.status(400).json({ success: false, errors });
   }
 
-  const { jobId, ...printData } = parsed.data;
+  const { jobId, station, ...printData } = parsed.data;
 
   if (isDuplicate(jobId)) {
     console.log(`[dedup] Skipping duplicate job ${jobId}`);
@@ -94,7 +101,7 @@ app.post('/print', async (req, res) => {
   }
 
   try {
-    await printReceipt(printData);
+    await printReceipt(printData, station);
     markPrinted(jobId);
     return res.json({ success: true });
   } catch (err) {
