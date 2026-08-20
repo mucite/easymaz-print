@@ -48,6 +48,30 @@ const PrintPayloadSchema = z.object({
     jobId: z.string().optional()
 });
 
+
+/**
+ * A production ticket: what to make, for which table, at which station.
+ *
+ * Almost nothing in common with a receipt, which is the point — no TIN, no VAT, no totals. A cook
+ * needs the food and the table; the tax arithmetic belongs on the diner's copy.
+ */
+const TicketItemSchema = z.object({
+    name: z.string().min(1, 'Item name is required'),
+    quantity: z.number().int().positive('Item quantity must be > 0'),
+    note: z.string().optional()
+});
+
+const TicketPayloadSchema = z.object({
+    jobId: z.string().min(1, 'jobId is required'),
+    station: z.string().min(1).optional(),
+    orderNumber: z.string().min(1, 'Order number is required'),
+    table: z.number().nullable().optional(),
+    time: z.string().optional(),
+    waiter: z.string().optional(),
+    items: z.array(TicketItemSchema).min(1, 'A ticket with no items is not worth printing')
+});
+
 module.exports = {
-    PrintPayloadSchema
+    PrintPayloadSchema,
+    TicketPayloadSchema
 };

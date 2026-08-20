@@ -400,3 +400,88 @@ function printReceipt(receipt, station) {
 }
 
 module.exports = { printReceipt, parseStations, resolveStation, stations: () => STATIONS };
+// ---------- production tickets ----------
+
+/**
+ * A ticket for the people making the order, not for the diner.
+ *
+ * Deliberately not the receipt. A receipt carries the TIN, the VAT breakdown and the total,
+ * because it is a fiscal document the diner keeps; a cook needs to know what to make and for which
+ * table, in type readable across a hot kitchen, and no money at all. Printing a receipt in the
+ * kitchen gives someone a page of tax arithmetic to read past before they find the food.
+ *
+ * One ticket per station, so an order of tibs and two beers prints food in the kitchen and drinks
+ * at the bar rather than one list somebody has to divide by hand.
+ */
+function buildTicketData(ticket, opts = {}) {
+    const ESC = '\x1B';
+    const GS = '\x1D';
+    const LINE_WIDTH = opts.lineWidth || 48;
+    const FEED_LINES = opts.feedLines || 4;
+
+    const out = [];
+    const init = () => out.push(ESC + '@');
+    const center = () => out.push(ESC + 'a' + '\x01');
+    const left = () => out.push(ESC + 'a' + '\x00');
+    const bold = (on) => out.push(ESC + 'E' + (on ? '\x01' : '\x00'));
+    // Double height and width. A cook reads this at arm's length over a pass.
+    const big = (on) => out.push(GS + '!' + (on ? '\x11' : '\x00'));
+    const rule = () => out.push('-'.repeat(LINE_WIDTH) + '\n');
+
+    init();
+
+    center();
+    bold(true);
+    big(true);
+    out.push(String(ticket.station || 'ORDER').toUpperCase() + '\n');
+    big(false);
+    bold(false);
+
+    // The table is what a waiter carries the plate to, so it is the largest thing after the
+    // station. An order number identifies the ticket if two tables order the same thing.
+    if (ticket.table !== null && ticket.table !== undefined) {
+        big(true);
+        out.push('TABLE ' + ticket.table + '\n');
+        big(false);
+    }
+    out.push('#' + String(ticket.orderNumber || '') + '\n');
+    if (ticket.time) out.push(String(ticket.time) + '\n');
+    left();
+    rule();
+
+    for (const item of ticket.items || []) {
+        big(true);
+        out.push(String(item.quantity) + ' x ' + String(item.name) + '\n');
+        big(false);
+        if (item.note) {
+            out.push('   ** ' + String(item.note) + '\n');
+        }
+    }
+
+    rule();
+    if (ticket.waiter) out.push('Waiter: ' + String(ticket.waiter) + '\n');
+
+    out.push('\n'.repeat(FEED_LINES));
+    // Cut, so the next station's ticket is a separate piece of paper.
+    out.push(GS + 'V' + '\x00');
+
+    return out;
+}
+
+/**
+ * Prints one production ticket at the station it names.
+ *
+ * Routed the same way a receipt is, so an unknown station still lands at the default printer
+ * rather than nowhere.
+ */
+function printTicket(ticket) {
+    const rawBuffer = Buffer.from(buildTicketData(ticket).join(''), 'latin1');
+
+    if (PRINTER_CMD || PRINTER_DEVICE) {
+        return PRINTER_CMD ? printViaCommand(rawBuffer) : printViaDevice(rawBuffer);
+    }
+    return printViaTcp(rawBuffer, resolveStation(ticket.station));
+}
+
+module.exports.printTicket = printTicket;
+module.exports.buildTicketData = buildTicketData;

@@ -3,8 +3,8 @@ const express = require('express');
 const https   = require('https');
 const http    = require('http');
 const fs      = require('fs');
-const { printReceipt, stations } = require('./printer');
-const { PrintPayloadSchema } = require('./validation');
+const { printReceipt, printTicket, stations } = require('./printer');
+const { PrintPayloadSchema, TicketPayloadSchema } = require('./validation');
 
 const app  = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -81,6 +81,43 @@ app.get('/health', (req, res) => {
   );
 
   res.status(200).json({ status: 'ok', tls: !!(SSL_CERT && SSL_KEY), printer, stations: named });
+});
+
+/**
+ * A production ticket, for the station that makes the order.
+ *
+ * Its own route rather than a flag on /print because it is a different document: no TIN, no VAT,
+ * no totals, and a layout in double-height type meant to be read across a hot kitchen. Sharing the
+ * receipt's schema would have meant inventing tax fields for a ticket that has no business
+ * carrying them.
+ */
+app.post('/ticket', async (req, res) => {
+  const parsed = TicketPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const errors = parsed.error.issues.map(issue => {
+      const path = issue.path.join('.');
+      return path ? `${path}: ${issue.message}` : issue.message;
+    });
+    return res.status(400).json({ success: false, errors });
+  }
+
+  const { jobId, ...ticket } = parsed.data;
+
+  // Same dedup as receipts. A till retrying a request must not put a second copy of the same food
+  // on the pass — the kitchen would cook it.
+  if (isDuplicate(jobId)) {
+    console.log(`[dedup] Skipping duplicate ticket ${jobId}`);
+    return res.json({ success: true, message: 'duplicate, already printed' });
+  }
+
+  try {
+    await printTicket(ticket);
+    markPrinted(jobId);
+    return res.json({ success: true, station: ticket.station || 'default' });
+  } catch (err) {
+    console.error(`[ticket] ${err.message}`);
+    return res.status(502).json({ success: false, error: err.message });
+  }
 });
 
 app.post('/print', async (req, res) => {
