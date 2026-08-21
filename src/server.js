@@ -44,6 +44,50 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+/**
+ * The shared secret this bridge will accept print jobs with.
+ *
+ * Until this existed the only protection was CORS, which is a rule browsers agree to follow and
+ * nothing else does — a plain POST from anywhere on the restaurant's WiFi printed whatever it liked
+ * on the till or kitchen printer. On a fiscal device that is a forged receipt, not a prank.
+ */
+const PRINT_KEY = process.env.PRINT_SHARED_SECRET || '';
+
+if (!PRINT_KEY) {
+  console.warn(
+    'PRINT_SHARED_SECRET is not set — this bridge will accept print jobs from anyone who can reach ' +
+    'it. Set it on the box and on the API so jobs have to come from a signed-in session.'
+  );
+}
+
+/**
+ * Print jobs must carry the secret; /health need not.
+ *
+ * Health is how an engineer on the phone checks whether a printer is configured at all, and it
+ * reveals a mode and an address rather than anything about a sale. Kept open deliberately, and it is
+ * the one route a caller can reach without the key.
+ */
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS' || req.path === '/health') {
+    return next();
+  }
+  if (!PRINT_KEY) {
+    // Nothing configured: refuse rather than silently accept. A bridge that prints for anybody is
+    // worse than a till that says printing is not set up.
+    return res.status(503).json({
+      success: false,
+      errors: ['Printing is not configured on this machine: PRINT_SHARED_SECRET is unset.']
+    });
+  }
+  const presented = req.headers['x-print-key'];
+  if (presented !== PRINT_KEY) {
+    console.warn(`Refused a print job with %s key from %s`,
+      presented ? 'the wrong' : 'no', req.ip);
+    return res.status(401).json({ success: false, errors: ['Not authorised to print here.'] });
+  }
+  next();
+});
+
 // Deduplication: track recently printed jobIds to prevent duplicate thermal prints
 // when a retry fires after a successful-but-timed-out response.
 const recentJobs = new Map(); // jobId -> timestamp
