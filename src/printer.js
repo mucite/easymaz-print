@@ -1,6 +1,7 @@
 const net    = require('net');
 const fs     = require('fs');
 const { spawn } = require('child_process');
+const { codePageByte, toPrintable } = require('./charset');
 
 // Mac/Linux CUPS:  PRINTER_CMD=lp -d "TM-T88V" -o raw -
 // Linux pipe:      PRINTER_CMD=cat > /dev/usb/lp0   (alternative to PRINTER_DEVICE)
@@ -12,6 +13,25 @@ const PRINTER_DEVICE    = process.env.PRINTER_DEVICE;
 // Network printer (TCP port 9100)
 const PRINTER_HOST      = process.env.PRINTER_HOST || '127.0.0.1';
 const PRINTER_PORT      = Number(process.env.PRINTER_PORT) || 9100;
+
+// Defaults for the single unnamed printer, and the fallback for any station that does not say.
+// 48 columns is 80 mm paper; 32 is 58 mm. cp437 is the one table every ESC/POS printer has.
+const DEFAULT_WIDTH     = Number(process.env.PRINTER_WIDTH) || 48;
+const DEFAULT_CUT       = (process.env.PRINTER_CUT || 'full').toLowerCase() === 'partial' ? 'partial' : 'full';
+// PRINTER_ENCODING is read because it already exists: it is set to CP437 in the box's env template
+// and passed through docker-compose, and nothing has ever read it. Somebody intended to configure
+// the code page, and the bridge ignored them. PRINTER_CODEPAGE wins where both are set.
+const DEFAULT_CODE_PAGE = process.env.PRINTER_CODEPAGE || process.env.PRINTER_ENCODING || 'cp437';
+
+/**
+ * Whether to fire the cash drawer at the end of a cash sale.
+ *
+ * On by default, because the drawer is wired into the printer's kick port on every till this is
+ * installed on and nothing was ever sending the pulse — so the drawer simply never opened. A site
+ * with no drawer sets this to off; a pulse to a port with nothing in it is harmless, but a
+ * configurable is cheaper than explaining that.
+ */
+const CASH_DRAWER       = (process.env.CASH_DRAWER || 'on').toLowerCase() !== 'off';
 
 /**
  * Named printers, for a site with more than one.
@@ -26,6 +46,21 @@ const PRINTER_PORT      = Number(process.env.PRINTER_PORT) || 9100;
  * A plain list rather than JSON because it is typed into an env file by whoever is standing at
  * the router, and JSON quoting inside an env file is a good way to lose an evening. The port is
  * optional and defaults to 9100, which is what every ESC/POS box on a LAN uses.
+ *
+ * Three more optional fields, so a site can mix printers without a code change — which is the whole
+ * point of not tying this to one brand:
+ *
+ *   name=host:port:width:cut:codepage
+ *   bar=192.168.1.51:9100:32:partial:cp437
+ *
+ * width    columns at Font A. 48 for 80 mm paper, 32 for 58 mm. Default 48.
+ * cut      full or partial. Default full, because a printer that implements only one implements
+ *          that one. Partial leaves a tab of paper joining the receipts.
+ * codepage which 256-character table to select with ESC t. Default cp437, the only table every
+ *          ESC/POS printer is guaranteed to have.
+ *
+ * Everything after the host is optional and positional, so existing PRINTERS values keep working
+ * exactly as they did.
  */
 function parseStations(spec) {
     const stations = {};
@@ -42,16 +77,33 @@ function parseStations(spec) {
         }
 
         const name = trimmed.slice(0, eq).trim().toLowerCase();
-        const target = trimmed.slice(eq + 1).trim();
-        const colon = target.lastIndexOf(':');
-        const host = colon > 0 ? target.slice(0, colon) : target;
-        const port = colon > 0 ? Number(target.slice(colon + 1)) : 9100;
+        // Split on every colon rather than the last one. The old code took lastIndexOf(':') as the
+        // port separator, which is correct for host:port and wrong the moment anything follows it.
+        const parts = trimmed.slice(eq + 1).trim().split(':').map(part => part.trim());
+        const host = parts[0];
+        const port = parts[1] ? Number(parts[1]) : 9100;
+        const width = parts[2] ? Number(parts[2]) : 48;
+        const cut = parts[3] ? parts[3].toLowerCase() : 'full';
+        const codepage = parts[4] || DEFAULT_CODE_PAGE;
 
         if (!host || !Number.isInteger(port) || port <= 0) {
             console.warn(`[printer] ignoring PRINTERS entry with no usable address: ${trimmed}`);
             continue;
         }
-        stations[name] = { host, port };
+        if (!Number.isInteger(width) || width < 20 || width > 96) {
+            console.warn(`[printer] ${name}: width "${parts[2]}" is not a column count — using 48`);
+        }
+        if (cut !== 'full' && cut !== 'partial') {
+            console.warn(`[printer] ${name}: cut "${cut}" is not full or partial — using full`);
+        }
+
+        stations[name] = {
+            host,
+            port,
+            width: Number.isInteger(width) && width >= 20 && width <= 96 ? width : 48,
+            cut: cut === 'partial' ? 'partial' : 'full',
+            codepage
+        };
     }
     return stations;
 }
@@ -65,9 +117,20 @@ const STATIONS = parseStations(process.env.PRINTERS);
  * ticket printed in the wrong room is confusing; a ticket that prints nowhere is an order the
  * kitchen never sees, and the default is the till printer where most tickets belong anyway.
  */
+function defaultStation() {
+    return {
+        host: PRINTER_HOST,
+        port: PRINTER_PORT,
+        width: DEFAULT_WIDTH,
+        cut: DEFAULT_CUT,
+        codepage: DEFAULT_CODE_PAGE,
+        name: 'default'
+    };
+}
+
 function resolveStation(station) {
     if (!station) {
-        return { host: PRINTER_HOST, port: PRINTER_PORT, name: 'default' };
+        return defaultStation();
     }
     const found = STATIONS[String(station).toLowerCase()];
     if (!found) {
@@ -75,7 +138,7 @@ function resolveStation(station) {
             `[printer] unknown station "${station}" — printing to the default instead. ` +
             `Configured: ${Object.keys(STATIONS).join(', ') || '(none)'}`
         );
-        return { host: PRINTER_HOST, port: PRINTER_PORT, name: 'default' };
+        return defaultStation();
     }
     return { ...found, name: String(station).toLowerCase() };
 }
@@ -92,9 +155,11 @@ function buildEscposData(receipt, opts = {}) {
     const ESC = '\x1B';
     const GS  = '\x1D';
 
-    const LINE_WIDTH = opts.lineWidth || 32;
+    const LINE_WIDTH = opts.lineWidth || DEFAULT_WIDTH;
     const AUTO_CUT   = opts.autoCut !== undefined ? opts.autoCut : true;
     const FEED_LINES = opts.feedLines || 4;
+    const CUT_STYLE  = opts.cut === 'partial' ? 'partial' : 'full';
+    const CODE_PAGE  = codePageByte(opts.codepage);
 
     const lines = [];
     const fmt = (v) => Number(v || 0).toFixed(2);
@@ -203,6 +268,10 @@ function buildEscposData(receipt, opts = {}) {
 
     // ---------- PRINT START ----------
     lines.push(ESC + "@");          // initialize printer
+    // Which 256-character table the printer should use. Nothing selected one before, so every brand
+    // used whatever it powers on with and the same receipt printed different accented characters on
+    // different printers — the actual reason this looked tied to one make of printer.
+    lines.push(ESC + "t" + String.fromCharCode(CODE_PAGE));
     lines.push(ESC + "a" + "\x01"); // center align
 
     lines.push(ESC + "E" + "\x01");
@@ -288,7 +357,20 @@ function buildEscposData(receipt, opts = {}) {
     lines.push("\n".repeat(FEED_LINES));
 
     if (AUTO_CUT) {
-        lines.push(GS + "V" + "\x01"); // full cut
+        // GS V 0 is a full cut, GS V 1 a partial one. This said "full cut" and sent 1, which is the
+        // partial. Full is the default now because a printer that implements only one implements
+        // that one, and a station can ask for partial if its paper tears badly.
+        lines.push(GS + "V" + (CUT_STYLE === 'partial' ? "\x01" : "\x00"));
+    }
+
+    // The drawer, last, so the paper is already out when it opens.
+    //
+    // ESC p m t1 t2: pin 0, on for 25 ms, off for 250. Nothing in this bridge ever sent it, so a
+    // cash drawer wired into the printer's kick port — which is where every one of these is wired —
+    // simply never opened. Only for a cash sale that has actually been paid: a card sale has no
+    // reason to open it, and an unpaid one is not finished.
+    if (CASH_DRAWER && receipt.paidByCash && receipt.isPaid) {
+        lines.push(ESC + "p" + "\x00" + "\x19" + "\xFA");
     }
 
     return lines;
@@ -376,14 +458,24 @@ function printViaTcp(rawBuffer, target) {
 
 // ---------- public entry point ----------
 function printReceipt(receipt, station) {
+    // Resolved before the data is built, not after. The width, the cut style and the code page are
+    // properties of the printer this is going to, so a site can put a 58 mm printer at the bar and an
+    // 80 mm one at the till without a code change — which is the point of not tying this to one make.
+    const target = resolveStation(station);
     const data = buildEscposData(receipt, {
-        lineWidth: 48,
+        lineWidth: target.width,
+        cut: target.cut,
+        codepage: target.codepage,
         autoCut: true,
         feedLines: 4
     });
 
-    // latin1 encodes each character as a single byte — required for raw ESC/POS
-    const rawBuffer = Buffer.from(data.join(''), 'latin1');
+    // toPrintable before latin1, not instead of it. latin1 maps each character to one byte, which is
+    // what raw ESC/POS needs — but it maps Ethiopic and typographic characters to whatever byte sits
+    // at that value, so an Amharic item name printed as line noise on a fiscal document. Control
+    // bytes are all below 0x80 and pass through untouched, so this is safe to apply to the whole
+    // stream rather than to each field.
+    const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
 
     // A command or a USB device is one physical printer by definition, so a station cannot mean
     // anything there. Worth saying out loud rather than ignoring silently.
@@ -396,10 +488,10 @@ function printReceipt(receipt, station) {
         return PRINTER_CMD ? printViaCommand(rawBuffer) : printViaDevice(rawBuffer);
     }
 
-    return printViaTcp(rawBuffer, resolveStation(station));
+    return printViaTcp(rawBuffer, target);
 }
 
-module.exports = { printReceipt, parseStations, resolveStation, stations: () => STATIONS };
+module.exports = { printReceipt, parseStations, resolveStation, buildEscposData, stations: () => STATIONS };
 // ---------- production tickets ----------
 
 /**
@@ -416,11 +508,13 @@ module.exports = { printReceipt, parseStations, resolveStation, stations: () => 
 function buildTicketData(ticket, opts = {}) {
     const ESC = '\x1B';
     const GS = '\x1D';
-    const LINE_WIDTH = opts.lineWidth || 48;
+    const LINE_WIDTH = opts.lineWidth || DEFAULT_WIDTH;
     const FEED_LINES = opts.feedLines || 4;
+    const CUT_STYLE  = opts.cut === 'partial' ? 'partial' : 'full';
+    const CODE_PAGE  = codePageByte(opts.codepage);
 
     const out = [];
-    const init = () => out.push(ESC + '@');
+    const init = () => out.push(ESC + '@' + ESC + 't' + String.fromCharCode(CODE_PAGE));
     const center = () => out.push(ESC + 'a' + '\x01');
     const left = () => out.push(ESC + 'a' + '\x00');
     const bold = (on) => out.push(ESC + 'E' + (on ? '\x01' : '\x00'));
@@ -463,7 +557,7 @@ function buildTicketData(ticket, opts = {}) {
 
     out.push('\n'.repeat(FEED_LINES));
     // Cut, so the next station's ticket is a separate piece of paper.
-    out.push(GS + 'V' + '\x00');
+    out.push(GS + 'V' + (CUT_STYLE === 'partial' ? '\x01' : '\x00'));
 
     return out;
 }
@@ -475,12 +569,18 @@ function buildTicketData(ticket, opts = {}) {
  * rather than nowhere.
  */
 function printTicket(ticket) {
-    const rawBuffer = Buffer.from(buildTicketData(ticket).join(''), 'latin1');
+    const target = resolveStation(ticket.station);
+    const data = buildTicketData(ticket, {
+        lineWidth: target.width,
+        cut: target.cut,
+        codepage: target.codepage
+    });
+    const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
 
     if (PRINTER_CMD || PRINTER_DEVICE) {
         return PRINTER_CMD ? printViaCommand(rawBuffer) : printViaDevice(rawBuffer);
     }
-    return printViaTcp(rawBuffer, resolveStation(ticket.station));
+    return printViaTcp(rawBuffer, target);
 }
 
 module.exports.printTicket = printTicket;
