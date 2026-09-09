@@ -283,7 +283,14 @@ function buildEscposData(receipt, opts = {}) {
 
     lines.push("\n");
 
-    if (receipt.tin) centerLines("TIN: " + receipt.tin).forEach(l => lines.push(l));
+    // The taxpayer's four identifiers. Art 4(1) with Art 29(3)(c) asks for all of them
+    // that the restaurant has, and until this printed only the first — which was itself
+    // being fed the business licence number by the API — a receipt named the wrong number
+    // under the right label and omitted the other three entirely.
+    if (receipt.tin)                   centerLines("TIN: " + receipt.tin).forEach(l => lines.push(l));
+    if (receipt.vatRegistrationNumber) centerLines("VAT No: " + receipt.vatRegistrationNumber).forEach(l => lines.push(l));
+    if (receipt.fsNumber)              centerLines("FS No: " + receipt.fsNumber).forEach(l => lines.push(l));
+    if (receipt.mrcNumber)             centerLines("MRC: " + receipt.mrcNumber).forEach(l => lines.push(l));
 
     lines.push("\n");
     lines.push(ESC + "a" + "\x00"); // left align

@@ -8,6 +8,16 @@ const PrintItemSchema = z.object({
 
 const PrintPayloadSchema = z.object({
     tin: z.string().min(10, 'TIN is required'),
+
+    // The other three identifiers a receipt has to carry. Optional, and deliberately so:
+    // a restaurant that is not VAT-registered has no VAT number, and a sale taken before
+    // the box was commissioned has no FS number or MRC. Rejecting the job would refuse a
+    // customer their receipt over a field the restaurant is not required to have; the
+    // template prints what is present.
+    vatRegistrationNumber: z.string().min(1).optional(),
+    fsNumber: z.string().min(1).optional(),
+    mrcNumber: z.string().min(1).optional(),
+
     businessName: z.string().min(1, 'Business name is required'),
     address: z.string().min(1, 'Address is required'),
     phone: z.string().min(1, 'Phone is required'),

@@ -255,9 +255,42 @@ test('a real cash receipt selects a code page and opens the drawer', () => {
 
   // And the receipt is still a receipt.
   assert.ok(out.includes('0012345678'), 'carries the TIN');
-  assert.ok(out.includes('FS-0001'), 'carries the FS number');
+  assert.ok(out.includes('FS-0001'), 'carries the invoice reference');
   assert.ok(out.includes('Tibs'), 'carries the items');
   assert.ok(out.includes('401.50'), 'carries the total');
+});
+
+test('a receipt carries all four of the taxpayer\'s identifiers', () => {
+  const { buildEscposData } = freshPrinter();
+  const registered = {
+    ...CASH_SALE,
+    vatRegistrationNumber: 'ETH0098765',
+    fsNumber: 'FS04121',
+    mrcNumber: 'MRC882401'
+  };
+
+  const out = buildEscposData(registered, {}).join('');
+
+  // Art 4(1) with Art 29(3)(c). Only the TIN used to print, and the API was feeding that
+  // field the business licence number, so the paper named the wrong number under the right
+  // label and omitted the rest.
+  assert.ok(out.includes('TIN: 0012345678'), 'the TIN, labelled as the TIN');
+  assert.ok(out.includes('VAT No: ETH0098765'), 'the VAT registration number');
+  assert.ok(out.includes('FS No: FS04121'), 'the FS number');
+  assert.ok(out.includes('MRC: MRC882401'), 'the machine registration code');
+});
+
+test('the three optional identifiers are omitted rather than printed empty', () => {
+  const { buildEscposData } = freshPrinter();
+
+  // A restaurant that is not VAT-registered has no VAT number, and a sale taken before the
+  // box was commissioned has no FS or MRC. A label with nothing after it would read on paper
+  // as a number that failed to print.
+  const out = buildEscposData(CASH_SALE, {}).join('');
+
+  assert.ok(out.includes('TIN: 0012345678'), 'the TIN still prints');
+  assert.ok(!out.includes('VAT No:'), 'no empty VAT line');
+  assert.ok(!out.includes('MRC:'), 'no empty MRC line');
 });
 
 test('a card sale does not open the drawer', () => {
