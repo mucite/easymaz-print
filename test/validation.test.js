@@ -71,3 +71,50 @@ test('the premises and the invoice type stay required, because the document is e
     assert.equal(parsed.success, false, `${field} should still be required`);
   }
 });
+
+/**
+ * Three spellings of "absent", and only one of them used to pass.
+ *
+ * A live box answered 400 to every print with:
+ *   vatRegistrationNumber: Too small: expected string to have >=1 characters
+ *   irn: Invalid input: expected string, received null
+ *
+ * `.optional()` permits undefined and nothing else, so an explicit null — which is what Jackson
+ * serialises an unset field as, and therefore what the API sends for every fiscal identifier until
+ * registration goes live — was the wrong type. And a restaurant that is not VAT-registered sends
+ * an empty string for a number it is not required to hold.
+ */
+test('null, empty string and whitespace all mean the field is not there', () => {
+  const parsed = PrintPayloadSchema.safeParse({
+    ...lawful(),
+    vatRegistrationNumber: '',
+    cashier: null,
+    waiter: '   ',
+    paymentMethod: null,
+    irn: null,
+    rrn: null,
+    fiscalQr: null,
+    fiscalState: null
+  });
+
+  assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+  for (const field of ['vatRegistrationNumber', 'cashier', 'waiter', 'paymentMethod', 'irn', 'rrn']) {
+    assert.equal(parsed.data[field], undefined, `${field} should normalise to absent`);
+  }
+});
+
+test('a flag nobody wrote is false, not a type error', () => {
+  const parsed = PrintPayloadSchema.safeParse({
+    ...lawful(), paidByCash: null, isPaid: null, isReceiptPrinted: null
+  });
+  assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+  assert.equal(parsed.data.paidByCash, false);
+  assert.equal(parsed.data.isPaid, false);
+  assert.equal(parsed.data.isReceiptPrinted, false);
+});
+
+test('a required field spelled as null is still refused, and named', () => {
+  const parsed = PrintPayloadSchema.safeParse({ ...lawful(), tin: null });
+  assert.equal(parsed.success, false);
+  assert.ok(parsed.error.issues.some(i => i.path.join('.') === 'tin'));
+});
