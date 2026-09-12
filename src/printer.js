@@ -356,6 +356,10 @@ function buildEscposData(receipt, opts = {}) {
     if (receipt.paymentStatus)
         lines.push(`Status: ${receipt.paymentStatus}\n`);
 
+    // Art 4(3)(c): the IRN, the RRN and the QR the Authority issued for this sale — or, when it has
+    // issued none yet, the fact that it has not. See fiscalLines.
+    fiscalLines(receipt, centerLines, formatInfoLine).forEach(l => lines.push(l));
+
     lines.push("\n");
     lines.push(ESC + "a" + "\x01"); // center
     centerLines("Thank you!").forEach(l => lines.push(l));
@@ -464,6 +468,93 @@ function printViaTcp(rawBuffer, target) {
 }
 
 // ---------- public entry point ----------
+// ESC and GS are declared again inside each builder below, which shadow these harmlessly. These
+// exist because the fiscal helpers are module scope: they are called from the receipt builder but
+// are too long to live inside it.
+const ESC = '\x1B';
+const GS = '\x1D';
+
+/**
+ * The Authority's QR code, in the printer's own hardware encoder.
+ *
+ * Art 4(1)(d) requires the QR printed or displayed legibly. GS ( k is the ESC/POS QR family and
+ * every printer that has a QR engine implements it; the alternative is rasterising one here and
+ * sending GS v 0, which needs an encoder in the bridge and prints worse.
+ *
+ * Four commands, in this order and no other: select model, set module size, set error correction,
+ * store the payload, print what was stored.
+ *
+ * The payload must be ASCII. toPrintable transliterates anything above 0x7F on its way to the
+ * buffer, which would silently alter the bytes inside the QR and produce a code that scans to
+ * something other than what the Authority issued — so a non-ASCII payload is printed as a text line
+ * instead of encoded wrong. That has never happened with a URL or a base64 token, which is what
+ * these are, and it is cheap to be certain.
+ *
+ * @param payload the QR content exactly as the Authority returned it
+ * @param moduleSize 1-16; 6 is about 25mm on 80mm paper, which scans off a phone at arm's length
+ */
+function qrLines(payload, moduleSize = 6) {
+    const data = String(payload || '');
+    if (!data) return [];
+
+    // eslint-disable-next-line no-control-regex
+    if (/[^\x20-\x7E]/.test(data)) {
+        return ['QR: ' + data + '\n'];
+    }
+
+    const GS_K = GS + '(' + 'k';
+    const size = Math.min(16, Math.max(1, Number(moduleSize) || 6));
+
+    // Store: pL pH are the length of (payload + the three bytes 49 80 48) in little-endian.
+    const storeLength = data.length + 3;
+    const pL = String.fromCharCode(storeLength & 0xFF);
+    const pH = String.fromCharCode((storeLength >> 8) & 0xFF);
+
+    return [
+        GS_K + '\x04\x00\x31\x41\x32\x00',                      // model 2
+        GS_K + '\x03\x00\x31\x43' + String.fromCharCode(size),    // module size
+        GS_K + '\x03\x00\x31\x45\x31',                           // error correction M
+        GS_K + pL + pH + '\x31\x50\x30' + data,                    // store payload
+        GS_K + '\x03\x00\x31\x51\x30'                            // print it
+    ];
+}
+
+/**
+ * What the Authority gave back for this sale, and what to say when it gave nothing.
+ *
+ * Art 4(3)(c) names three things a registered receipt carries: an IRN, an RRN and a QR code. Until
+ * this, a receipt printed the taxpayer's four identifiers and said nothing whatever about the
+ * registration that is supposed to make it a fiscal document.
+ *
+ * A receipt with no IRN is not automatically wrong. Art 4(4) allows a sale to be taken offline and
+ * transmitted when the connection returns, so the paper legitimately exists before its registration
+ * does — but the customer's copy must not imply it is registered when it is not. OFFLINE_QUEUED and
+ * PENDING say so; NOT_REQUIRED is a sale from before the regime and says nothing, because there is
+ * nothing to say.
+ */
+function fiscalLines(receipt, centerLines, formatInfoLine) {
+    const out = [];
+    const state = String(receipt.fiscalState || '').toUpperCase();
+
+    if (receipt.irn) out.push(formatInfoLine('IRN', receipt.irn));
+    if (receipt.rrn) out.push(formatInfoLine('RRN', receipt.rrn));
+
+    if (receipt.fiscalQr) {
+        out.push('\n');
+        out.push(ESC + 'a' + '\x01');
+        qrLines(receipt.fiscalQr).forEach(l => out.push(l));
+        out.push('\n');
+        out.push(ESC + 'a' + '\x00');
+    } else if (state === 'OFFLINE_QUEUED' || state === 'PENDING' || state === 'SUBMITTED') {
+        out.push('\n');
+        out.push(ESC + 'a' + '\x01');
+        centerLines('Awaiting fiscal registration').forEach(l => out.push(l));
+        out.push(ESC + 'a' + '\x00');
+    }
+
+    return out;
+}
+
 function printReceipt(receipt, station) {
     // Resolved before the data is built, not after. The width, the cut style and the code page are
     // properties of the printer this is going to, so a site can put a 58 mm printer at the bar and an

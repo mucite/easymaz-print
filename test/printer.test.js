@@ -337,3 +337,71 @@ test('a curly quote from a phone does not become an unrelated glyph', () => {
 
   assert.strictEqual(toPrintable('Chef’s special — today'), "Chef's special - today");
 });
+
+/**
+ * Art 4(3)(c): a registered receipt carries an IRN, an RRN and a QR code.
+ *
+ * None of the three reached paper before this. A receipt printed the taxpayer's own identifiers and
+ * said nothing at all about the registration that is supposed to make it a fiscal document.
+ */
+const fiscalReceipt = (extra) => ({
+  tin: '0012345678',
+  businessName: 'Zing Coffee',
+  address: 'Mekanisa',
+  fsNo: 'FS-1',
+  orderNumber: '42',
+  date: '2026-09-12',
+  invoiceType: 'Cash Invoice Paid',
+  items: [{ name: 'Macchiato', quantity: 1, price: 60 }],
+  subtotal: 60, serviceCharge: 0, vat: 9, vatPercentage: 15, total: 69,
+  restaurantId: 'r-1', paidByCash: true, isPaid: true,
+  ...extra
+});
+
+test('the IRN and RRN are printed when the Authority has issued them', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ irn: 'IRN-99', rrn: 'RRN-77' })).join('');
+  assert.match(out, /IRN/);
+  assert.match(out, /IRN-99/);
+  assert.match(out, /RRN-77/);
+});
+
+test('the QR goes to the printer as GS ( k, not as a line of text', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ fiscalQr: 'https://esr.mor.gov.et/v/ABC123' })).join('');
+  // Model, size, error correction, store, print — all five, in that order.
+  assert.ok(out.includes('\x1D(k\x04\x001A2\x00'), 'selects QR model 2');
+  assert.ok(out.includes('\x1D(k\x03\x001E1'), 'sets error correction');
+  assert.ok(out.includes('1P0https://esr.mor.gov.et/v/ABC123'), 'stores the payload verbatim');
+  assert.ok(out.includes('\x1D(k\x03\x001Q0'), 'prints what was stored');
+});
+
+test('the stored length is the payload plus three, little-endian', () => {
+  const payload = 'X'.repeat(300);
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ fiscalQr: payload })).join('');
+  const expected = '\x1D(k' + String.fromCharCode(303 & 0xFF) + String.fromCharCode(303 >> 8) + '1P0';
+  assert.ok(out.includes(expected), 'a payload over 255 bytes needs the high byte set');
+});
+
+test('a payload the code page would mangle is printed as text rather than encoded wrong', () => {
+  // toPrintable transliterates anything above 0x7F on its way to the buffer, which would alter the
+  // bytes inside the QR and produce a code that scans to something the Authority never issued.
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ fiscalQr: 'https://esr.mor.gov.et/ገበታ' })).join('');
+  assert.ok(!out.includes('\x1D(k'), 'no QR command is emitted');
+  assert.match(out, /QR: /);
+});
+
+test('a sale awaiting transmission says so instead of implying it is registered', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ fiscalState: 'OFFLINE_QUEUED' })).join('');
+  assert.match(out, /Awaiting fiscal registration/);
+});
+
+test('a sale from before the regime says nothing, because there is nothing to say', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ fiscalState: 'NOT_REQUIRED' })).join('');
+  assert.ok(!/Awaiting fiscal registration/.test(out));
+  assert.ok(!out.includes('\x1D(k'));
+});

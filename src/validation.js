@@ -68,7 +68,17 @@ const PrintPayloadSchema = z.object({
 
     paymentStatus: z.string().optional(),
     isReadOnlyMode: z.boolean().optional(),
-    jobId: z.string().optional()
+    jobId: z.string().optional(),
+
+    // Art 4(3)(c): what the Authority returns when it registers a sale. All optional, because there
+    // is no transmission specification yet and nothing is registered — a receipt printed today
+    // carries none of them, and the template omits what is absent. They are declared now so that
+    // the day registration goes live the bridge accepts them instead of rejecting every receipt in
+    // the country with a 400.
+    irn: z.string().min(1).optional(),
+    rrn: z.string().min(1).optional(),
+    fiscalQr: z.string().min(1).optional(),
+    fiscalState: z.string().min(1).optional()
 });
 
 
