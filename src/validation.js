@@ -60,9 +60,11 @@ const PrintPayloadSchema = z.object({
     isPaid: z.boolean().optional().default(false),
     isReceiptPrinted: z.boolean().optional().default(false),
 
-    // Was an enum, including a STRIPE the API dropped years ago and excluding null, which is every
-    // unpaid order. The bridge prints this word on a line; it does not authorise anything with it,
-    // so an enum here was a validation rule with no one behind it that rejected real receipts.
+    // Was an enum of three names, one of which the API no longer has, and it excluded null — which
+    // is every unpaid order. The bridge prints this word on a line; it does not authorise anything
+    // with it, so an enum here was a validation rule with no one behind it that rejected real
+    // receipts. What a payment method may be is the API's question, and it answers it in
+    // PaymentMethod.from.
     paymentMethod: z.string().min(1).nullable().optional(),
     restaurantId: z.string().min(1, 'Restaurant ID is required'),
 
