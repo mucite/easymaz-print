@@ -20,13 +20,20 @@ const PrintPayloadSchema = z.object({
 
     businessName: z.string().min(1, 'Business name is required'),
     address: z.string().min(1, 'Address is required'),
-    phone: z.string().min(1, 'Phone is required'),
     fsNo: z.string().min(1, 'FS number is required'),
     orderNumber: z.string().min(1, 'Order number is required'),
     date: z.string().min(1, 'Date is required'),
     invoiceType: z.string().min(1, 'Invoice type is required'),
-    cashier: z.string().min(1, 'Cashier is required'),
-    waiter: z.string().min(1, 'Waiter is required'),
+
+    // Optional, all four, and it took a rejected receipt at a counter to establish why. A sale rung
+    // up at the till has no waiter; a restaurant may have no published phone; an order that has not
+    // been paid yet has no payment method at all. The template already prints each only when it is
+    // there, so requiring them bought nothing and refused to print a lawful receipt over a field
+    // the sale does not have. What a receipt must carry — the TIN, the premises, the invoice type,
+    // the items and the arithmetic — is still required above and below.
+    phone: z.string().min(1).optional(),
+    cashier: z.string().min(1).optional(),
+    waiter: z.string().min(1).optional(),
     table: z.number().nullable().optional(),
 
     // Which printer this ticket belongs at — kitchen, bar, reception. Absent means the default,
@@ -46,12 +53,18 @@ const PrintPayloadSchema = z.object({
 
     total: z.number().nonnegative('Total must be >= 0'),
 
-    paidByCash: z.boolean(),
-    isPaid: z.boolean(),
+    // Absent means no, which is what an order that has never been paid or printed actually looks
+    // like coming out of Mongo. Requiring the field meant a boolean that was simply never written
+    // failed the schema, and the till was told the printer had a problem.
+    paidByCash: z.boolean().optional().default(false),
+    isPaid: z.boolean().optional().default(false),
+    isReceiptPrinted: z.boolean().optional().default(false),
 
-    paymentMethod: z.enum(['CHAPA', 'CASH', 'STRIPE']),
+    // Was an enum, including a STRIPE the API dropped years ago and excluding null, which is every
+    // unpaid order. The bridge prints this word on a line; it does not authorise anything with it,
+    // so an enum here was a validation rule with no one behind it that rejected real receipts.
+    paymentMethod: z.string().min(1).nullable().optional(),
     restaurantId: z.string().min(1, 'Restaurant ID is required'),
-    isReceiptPrinted: z.boolean(),
 
     paymentStatus: z.string().optional(),
     isReadOnlyMode: z.boolean().optional(),
