@@ -360,6 +360,9 @@ function buildEscposData(receipt, opts = {}) {
     // issued none yet, the fact that it has not. See fiscalLines.
     fiscalLines(receipt, centerLines, formatInfoLine).forEach(l => lines.push(l));
 
+    // Art 4(1)(i): the buyer's own copy, fetched from this box by whoever scans it.
+    receiptCodeLines(receipt, centerLines).forEach(l => lines.push(l));
+
     lines.push("\n");
     lines.push(ESC + "a" + "\x01"); // center
     centerLines("Thank you!").forEach(l => lines.push(l));
@@ -542,6 +545,7 @@ function fiscalLines(receipt, centerLines, formatInfoLine) {
     if (receipt.fiscalQr) {
         out.push('\n');
         out.push(ESC + 'a' + '\x01');
+        centerLines('Revenue Authority').forEach(l => out.push(l));
         qrLines(receipt.fiscalQr).forEach(l => out.push(l));
         out.push('\n');
         out.push(ESC + 'a' + '\x00');
@@ -552,6 +556,37 @@ function fiscalLines(receipt, centerLines, formatInfoLine) {
         out.push(ESC + 'a' + '\x00');
     }
 
+    return out;
+}
+
+/**
+ * The code on the slip — the diner's own copy of this receipt.
+ *
+ * Article 4(1)(i) asks the system to send the buyer the registered receipt "by email, SMS or other,
+ * and print on request". The QR is that "other", and it is the argument the whole design leans on
+ * for keeping sales data inside the building: the receipt is not mailed anywhere, the diner's phone
+ * fetches it from the machine that registered it.
+ *
+ * That argument had nothing behind it. No renderer printed a code, and nothing served the route the
+ * link pointed at, while two messages from the API told diners "the code on your slip opens the same
+ * receipt". This is the code.
+ *
+ * Labelled, and kept separate from the Authority's QR above, because the two are different documents
+ * to anybody who scans them: one is a tax registration and one is a bill. An unlabelled pair is a
+ * guess.
+ *
+ * Deliberately not printed when the payload carries no URL. A code that scans to nothing is worse
+ * than a blank space on the paper, because it looks like it works.
+ */
+function receiptCodeLines(receipt, centerLines) {
+    if (!receipt.receiptUrl) {
+        return [];
+    }
+    const out = ['\n', ESC + 'a' + '\x01'];
+    centerLines('Your receipt').forEach(l => out.push(l));
+    qrLines(receipt.receiptUrl, 5).forEach(l => out.push(l));
+    out.push('\n');
+    out.push(ESC + 'a' + '\x00');
     return out;
 }
 

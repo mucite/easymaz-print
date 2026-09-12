@@ -112,7 +112,12 @@ const PrintPayloadSchema = z.object({
     irn: optionalText,
     rrn: optionalText,
     fiscalQr: optionalText,
-    fiscalState: optionalText
+    fiscalState: optionalText,
+
+    // Where the diner's own copy of this receipt lives, encoded into the QR at the foot of the
+    // slip. Built by the till from its own origin, because the address it reached this box on is by
+    // construction one the restaurant's network resolves.
+    receiptUrl: optionalText
 });
 
 

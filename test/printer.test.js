@@ -405,3 +405,35 @@ test('a sale from before the regime says nothing, because there is nothing to sa
   assert.ok(!/Awaiting fiscal registration/.test(out));
   assert.ok(!out.includes('\x1D(k'));
 });
+
+/**
+ * Art 4(1)(i): the code on the slip, which is the diner's own copy.
+ *
+ * Two messages from the API have told diners "the code on your slip opens the same receipt" while
+ * no renderer printed one and nothing served the route it pointed at. These cover the printing half.
+ */
+test('the slip carries a scannable code for the buyer\'s own copy', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ receiptUrl: 'http://192.168.1.50/app/r/abc123' })).join('');
+  assert.match(out, /Your receipt/);
+  assert.ok(out.includes('1P0http://192.168.1.50/app/r/abc123'), 'stores the URL verbatim');
+  assert.ok(out.includes('\x1D(k\x03\x001Q0'), 'and prints it');
+});
+
+test('no URL means no code, because one that scans to nothing looks like it works', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({})).join('');
+  assert.ok(!/Your receipt/.test(out));
+});
+
+test('the buyer\'s code and the Authority\'s are labelled apart', () => {
+  // Different documents to anybody who scans them: one is a tax registration, one is a bill.
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({
+    fiscalQr: 'https://esr.mor.gov.et/v/ABC123',
+    receiptUrl: 'http://192.168.1.50/app/r/abc123'
+  })).join('');
+  assert.match(out, /Revenue Authority/);
+  assert.match(out, /Your receipt/);
+  assert.ok(out.indexOf('Revenue Authority') < out.indexOf('Your receipt'), 'the tax code comes first');
+});
