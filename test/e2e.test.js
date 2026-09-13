@@ -441,9 +441,10 @@ describe('PRINTER_IP, the name the other deployment uses', () => {
   });
 
   /**
-   * The systemd env file spells this PRINTER_HOST and docker-compose spells it PRINTER_IP. Both are
-   * live in the field, in files that look alike, so a line copied between them has to work — under
-   * the old behaviour it silently configured nothing and every receipt went to the container itself.
+   * The box's .env spells this PRINTER_IP and compose remaps it to PRINTER_HOST, which is the name
+   * the bridge reads. An .env passed through directly, or a compose file edited without the mapping,
+   * has to work — under the old behaviour it silently configured nothing and every receipt went to
+   * the container itself.
    */
   test('is accepted where PRINTER_HOST would be, and actually prints', async () => {
     const health = await bridge.health();

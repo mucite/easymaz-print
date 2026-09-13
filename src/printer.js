@@ -13,12 +13,12 @@ const PRINTER_DEVICE    = process.env.PRINTER_DEVICE;
 // Network printer over Ethernet or Wi-Fi (TCP port 9100). The two are the same socket here; only
 // how the printer got its address differs.
 //
-// PRINTER_IP is accepted as an alias because the two deployment modes disagreed on the name. The
-// systemd env file sets PRINTER_HOST, which is what this reads; docker-compose sets PRINTER_IP in
-// the box's .env and remaps it on the way in. Both spellings are therefore live in the field, in
-// files that look alike, and copying a line from one to the other silently configured nothing —
-// the value never arrived, the default below took over, and every receipt went to this container
-// itself. Reading both is cheaper than expecting anyone to remember which file they are in.
+// PRINTER_IP is accepted as an alias. The box's .env names it that way — it is what an installer
+// standing at the till calls it — and docker-compose remaps it to the name read here. Kept as an
+// alias rather than left to the mapping because an .env passed through directly, or a compose file
+// edited without it, would otherwise configure nothing at all: the value never arrives, the default
+// below takes over, and every receipt goes to this container itself. That fault has happened once
+// already, under the old name.
 const CONFIGURED_HOST   = process.env.PRINTER_HOST || process.env.PRINTER_IP;
 const PRINTER_HOST      = CONFIGURED_HOST || '127.0.0.1';
 const PRINTER_PORT      = Number(process.env.PRINTER_PORT) || 9100;
