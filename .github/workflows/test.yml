@@ -1,0 +1,42 @@
+name: test
+
+# This bridge is the last few inches before a fiscal document comes out of a printer, and it had no
+# CI at all. The suite includes an end-to-end pass that starts src/server.js for real and puts TCP
+# listeners where the printers would be, so the faults it catches are the ones that live in the
+# seams — a ticket routed to the wrong room, a retry that prints the food twice — none of which any
+# in-process test can see.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is what the Dockerfile ships, so it is the one that has to pass. 24 is what a developer
+        # is likely to have, and catches the reverse drift — a suite that only works on the runtime
+        # nobody deploys is worth about as much as no suite.
+        node: ['20', '24']
+
+    name: test (node ${{ matrix.node }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # The e2e suite spawns the server and binds sockets, so dev dependencies are not the only
+      # thing that has to be present — the real runtime dependencies do.
+      - run: npm ci
+
+      - run: npm test
