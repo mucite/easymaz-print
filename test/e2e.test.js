@@ -353,3 +353,95 @@ describe('PRINTER_IP, the name the other deployment uses', () => {
     assert.match(paper(register).toUpperCase(), /TEST KITCHEN/);
   });
 });
+
+/**
+ * The ordinary upgrade: a till and a kitchen, and no bar.
+ *
+ * This is the shape most restaurants reach first, and it is not the three-printer case with one
+ * removed. Drinks have nowhere of their own to go, so they land at the till beside the person
+ * pouring them — and the receipt lands there too, on the same printer, at a different moment. What
+ * has to hold is that the kitchen sees the food and nothing else: no drinks, no prices, and never a
+ * receipt.
+ */
+describe('a till and a kitchen, with no bar', () => {
+  let register, kitchen, bridge;
+
+  before(async () => {
+    [register, kitchen] = await Promise.all([fakePrinter(), fakePrinter()]);
+    bridge = await startBridge({
+      PRINT_SHARED_SECRET: KEY,
+      PRINTER_HOST: '127.0.0.1',
+      PRINTER_PORT: String(register.port),
+      PRINTERS: `kitchen=127.0.0.1:${kitchen.port}`
+    });
+  });
+
+  after(async () => {
+    await bridge?.stop();
+    await Promise.all([register?.close(), kitchen?.close()]);
+  });
+
+  test('health reports the one station it has', async () => {
+    const health = await bridge.health();
+
+    assert.strictEqual(health.registerConfigured, true);
+    assert.deepStrictEqual(Object.keys(health.stations), ['kitchen']);
+  });
+
+  test('food goes to the kitchen and drinks stay at the till', async () => {
+    register.reset();
+    kitchen.reset();
+
+    // What approving one order does: the split has already happened in the till, and each group
+    // arrives as its own ticket. Untagged is the drinks group, because no category named a bar.
+    await bridge.post('/ticket', ticket('kitchen', 'two-food', [{ name: 'Tibs', quantity: 1 }]));
+    await bridge.post('/ticket', ticket(null, 'two-drinks', [{ name: 'Habesha Beer', quantity: 2 }]));
+
+    assert.ok(await settled(kitchen), 'the kitchen was never handed the food');
+    assert.ok(await settled(register), 'the till was never handed the drinks');
+
+    assert.match(paper(kitchen), /Tibs/);
+    assert.doesNotMatch(paper(kitchen), /Habesha/, 'the cook was handed the drinks');
+    assert.match(paper(register), /Habesha Beer/);
+    assert.doesNotMatch(paper(register), /Tibs/, 'the food was listed at the till as well');
+  });
+
+  /**
+   * A category tagged for a room the box does not have — someone set up Drinks for a bar that was
+   * never installed, or the bar printer was taken out and nobody untagged it. The drinks must still
+   * be made, so the ticket goes to the till and the log says why.
+   */
+  test('a station the box does not have falls back to the till', async () => {
+    register.reset();
+    const before = kitchen.streams.length;
+
+    await bridge.post('/ticket', ticket('bar', 'two-nobar', [{ name: 'Wine', quantity: 1 }]));
+
+    assert.ok(await settled(register), 'a ticket for a missing station printed nowhere');
+    assert.match(paper(register), /Wine/);
+    assert.match(bridge.log(), /unknown station "bar"/);
+    assert.strictEqual(kitchen.streams.length, before, 'it went to the kitchen instead');
+  });
+
+  test('the receipt prints at the till, never in the kitchen', async () => {
+    register.reset();
+    const before = kitchen.streams.length;
+
+    const res = await bridge.post('/print', { ...RECEIPT, jobId: 'two-receipt' });
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(register), 'the receipt never printed');
+
+    const slip = paper(register);
+    assert.match(slip, /0012345678/);
+    assert.match(slip, /299/);
+    // The whole point of the split: the kitchen is not where money is handled.
+    assert.strictEqual(kitchen.streams.length, before, 'a fiscal receipt printed in the kitchen');
+  });
+
+  test('the kitchen is never shown a price, across everything it was sent', async () => {
+    const everything = paper(kitchen);
+
+    assert.match(everything, /Tibs/, 'nothing reached the kitchen at all, so this proves nothing');
+    assert.doesNotMatch(everything, /260|299|TIN|VAT/);
+  });
+});
