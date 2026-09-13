@@ -1,47 +1,25 @@
 require('dotenv').config();
 const express = require('express');
-const https   = require('https');
 const http    = require('http');
-const fs      = require('fs');
 const { printReceipt, printTicket, stations, registerConfigured } = require('./printer');
 const { PrintPayloadSchema, TicketPayloadSchema } = require('./validation');
 
 const app  = express();
 const PORT = Number(process.env.PORT) || 3001;
 
-const SSL_CERT = process.env.SSL_CERT_PATH;
-const SSL_KEY  = process.env.SSL_KEY_PATH;
-
-// When using a local mkcert cert the Origin will be https://192.168.x.x or
-// https://admin.easymaz.com; allow both. Local dev origins included for convenience.
-const ALLOWED_ORIGINS = new Set([
-  'https://admin.easymaz.com',
-  'http://localhost:4200',
-  'http://localhost:3000',
-]);
-
-// Any https:// origin on a private LAN IP is also allowed so that the admin
-// works offline (no tunnel) from any device on the restaurant's WiFi.
-function isAllowedOrigin(origin) {
-  if (!origin) return false;
-  if (ALLOWED_ORIGINS.has(origin)) return true;
-  // https://<private-IP>:<any-port>  — covers mkcert-secured LAN access
-  return /^https:\/\/(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(origin);
-}
-
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (isAllowedOrigin(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  // Chrome 94+ Private Network Access: allows https pages to call http://localhost
-  res.setHeader('Access-Control-Allow-Private-Network', 'true');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  next();
-});
-
+// No CORS, and no TLS. Both existed for a browser talking to this bridge directly — an admin page
+// on the restaurant's WiFi reaching a mkcert-secured https://192.168.x.x, with an origin allowlist
+// deciding who could ask.
+//
+// Nothing does that now. Receipts and tickets go through the API, which relays them over the
+// compose network, and the compose file publishes no port for this service at all: the only things
+// that can open a socket here are the API and the nginx container beside it. Both are server-side,
+// neither sends an Origin, and neither preflights. An allowlist that no request is ever measured
+// against is not protection, it is a comment that looks like protection — and the shared secret
+// below is what actually decides whether a job prints.
+//
+// TLS went with it for the same reason. There is no network hop to encrypt: both ends are
+// containers on one host, and the certificate existed so a browser would trust a LAN address.
 app.use(express.json());
 
 /**
@@ -68,7 +46,7 @@ if (!PRINT_KEY) {
  * the one route a caller can reach without the key.
  */
 app.use((req, res, next) => {
-  if (req.method === 'OPTIONS' || req.path === '/health') {
+  if (req.path === '/health') {
     return next();
   }
   if (!PRINT_KEY) {
@@ -134,7 +112,6 @@ app.get('/health', (req, res) => {
   res.status(200).json({
     status: register ? 'ok' : 'unconfigured',
     registerConfigured: register,
-    tls: !!(SSL_CERT && SSL_KEY),
     printer,
     stations: named
   });
@@ -232,29 +209,10 @@ function logPrinterTarget() {
 }
 
 function startServer() {
-  if (SSL_CERT && SSL_KEY) {
-    let cert, key;
-    try {
-      cert = fs.readFileSync(SSL_CERT);
-      key  = fs.readFileSync(SSL_KEY);
-    } catch (err) {
-      console.error(`[TLS] Failed to load cert/key: ${err.message}`);
-      console.error(`[TLS] SSL_CERT_PATH=${SSL_CERT}  SSL_KEY_PATH=${SSL_KEY}`);
-      process.exit(1);
-    }
-
-    https.createServer({ cert, key }, app).listen(PORT, '0.0.0.0', () => {
-      console.log(`[easymaz-print] HTTPS  https://0.0.0.0:${PORT}`);
-      logPrinterTarget();
-      console.log('[easymaz-print] TLS enabled — works offline on LAN');
-    });
-  } else {
-    http.createServer(app).listen(PORT, '0.0.0.0', () => {
-      console.log(`[easymaz-print] HTTP   http://0.0.0.0:${PORT}`);
-      logPrinterTarget();
-      console.log('[easymaz-print] No TLS — only works from localhost (set SSL_CERT_PATH + SSL_KEY_PATH for LAN access)');
-    });
-  }
+  http.createServer(app).listen(PORT, '0.0.0.0', () => {
+    console.log(`[easymaz-print] HTTP   http://0.0.0.0:${PORT}`);
+    logPrinterTarget();
+  });
 }
 
 startServer();
