@@ -292,6 +292,109 @@ describe('a box with a register printer and two stations', () => {
     assert.strictEqual(bad.status, 400);
     assert.match(JSON.stringify(bad.body), /items/, 'the answer did not say which field was wrong');
   });
+
+  test('a whole order reaches three rooms at once, and each sees only its own', async () => {
+    register.reset();
+    kitchen.reset();
+    bar.reset();
+
+    // One order approved: the till has already grouped it, and the three tickets go out together
+    // rather than in a tidy sequence. Sent concurrently on purpose — a routing table that is read
+    // and mutated per request would cross the streams here and nowhere else.
+    await Promise.all([
+      bridge.post('/ticket', ticket('kitchen', 'three-food', [{ name: 'Tibs', quantity: 1 }])),
+      bridge.post('/ticket', ticket('bar', 'three-drink', [{ name: 'Habesha Beer', quantity: 2 }])),
+      bridge.post('/ticket', ticket(null, 'three-till', [{ name: 'Service Note', quantity: 1 }]))
+    ]);
+
+    assert.ok(await settled(kitchen), 'the kitchen got nothing');
+    assert.ok(await settled(bar), 'the bar got nothing');
+    assert.ok(await settled(register), 'the till got nothing');
+
+    assert.match(paper(kitchen), /Tibs/);
+    assert.match(paper(bar), /Habesha Beer/);
+    assert.match(paper(register), /Service Note/);
+
+    // Each room sees its own line and neither of the other two.
+    assert.doesNotMatch(paper(kitchen), /Habesha|Service Note/);
+    assert.doesNotMatch(paper(bar), /Tibs|Service Note/);
+    assert.doesNotMatch(paper(register), /Tibs|Habesha/);
+  });
+});
+
+/**
+ * Three rooms, and the bar's printer is off.
+ *
+ * The till already treats stations independently and says why: "a bar printer that is off must not
+ * stop the kitchen getting its food." That promise was only ever kept on the till's side of the
+ * wire. This is the other side — the bridge refusing one station has to be a refusal of that
+ * station and nothing else, or one unplugged cable in a corner stops dinner.
+ */
+describe('three rooms, with the bar printer switched off', () => {
+  let register, kitchen, bar, bridge;
+
+  before(async () => {
+    [register, kitchen, bar] = await Promise.all([fakePrinter(), fakePrinter(), fakePrinter()]);
+    bridge = await startBridge({
+      PRINT_SHARED_SECRET: KEY,
+      PRINTER_HOST: '127.0.0.1',
+      PRINTER_PORT: String(register.port),
+      PRINTERS: `kitchen=127.0.0.1:${kitchen.port},bar=127.0.0.1:${bar.port}`
+    });
+
+    // Unplugged after the bridge has its configuration, which is how it happens in a restaurant:
+    // the address is still configured, there is simply nothing answering at it.
+    await bar.close();
+  });
+
+  after(async () => {
+    await bridge?.stop();
+    await Promise.all([register?.close(), kitchen?.close()]);
+  });
+
+  test('the bar ticket fails, and says so rather than claiming success', async () => {
+    const res = await bridge.post('/ticket', ticket('bar', 'off-drink', [{ name: 'Beer', quantity: 1 }]));
+
+    assert.strictEqual(res.status, 502, JSON.stringify(res.body));
+    assert.strictEqual(res.body.success, false);
+  });
+
+  test('the kitchen still gets its food', async () => {
+    kitchen.reset();
+    const res = await bridge.post('/ticket', ticket('kitchen', 'off-food', [{ name: 'Tibs', quantity: 1 }]));
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(kitchen), 'a dead bar printer stopped the kitchen');
+    assert.match(paper(kitchen), /Tibs/);
+  });
+
+  test('the receipt still prints at the till', async () => {
+    register.reset();
+    const res = await bridge.post('/print', { ...RECEIPT, jobId: 'off-receipt' });
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(register), 'a dead bar printer stopped the receipt');
+    assert.match(paper(register), /0012345678/);
+  });
+
+  /**
+   * The failed ticket must not be remembered as printed. Dedup is keyed on jobId and skips anything
+   * it has seen, so marking a refusal would mean the retry after the printer is switched back on is
+   * silently dropped and the drink is never made.
+   */
+  test('a failed ticket can be retried once the printer is back', async () => {
+    const revived = await fakePrinter();
+    // It cannot come back on the same port, so this asserts the dedup window rather than the wire:
+    // the same jobId must still be accepted, not skipped as already printed.
+    const res = await bridge.post('/ticket', ticket('bar', 'off-drink', [{ name: 'Beer', quantity: 1 }]));
+
+    assert.notStrictEqual(
+      res.body.message,
+      'duplicate, already printed',
+      'the failed ticket was remembered as printed, so the retry was dropped'
+    );
+    await revived.close();
+  });
 });
 
 describe('a box nobody finished setting up', () => {
