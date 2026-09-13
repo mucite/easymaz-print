@@ -14,6 +14,21 @@ const PRINTER_DEVICE    = process.env.PRINTER_DEVICE;
 const PRINTER_HOST      = process.env.PRINTER_HOST || '127.0.0.1';
 const PRINTER_PORT      = Number(process.env.PRINTER_PORT) || 9100;
 
+/**
+ * Whether a register printer was actually configured, as opposed to assumed.
+ *
+ * The default above is a guess, and a guess that looks like configuration: with nothing set, every
+ * receipt is sent to 127.0.0.1:9100 and fails at connect time with a refused socket, which reads as
+ * a dead printer rather than a box nobody finished setting up. The named stations are optional — a
+ * restaurant with one printer at the till names none — but the till's own printer is not, because
+ * a receipt is a fiscal document and there is nowhere else for it to go.
+ *
+ * Read from the raw environment, not from PRINTER_HOST above, which can never be empty.
+ */
+const REGISTER_CONFIGURED = Boolean(
+    PRINTER_CMD || PRINTER_DEVICE || process.env.PRINTER_HOST
+);
+
 // Defaults for the single unnamed printer, and the fallback for any station that does not say.
 // 48 columns is 80 mm paper; 32 is 58 mm. cp437 is the one table every ESC/POS printer has.
 const DEFAULT_WIDTH     = Number(process.env.PRINTER_WIDTH) || 48;
@@ -624,7 +639,14 @@ function printReceipt(receipt, station) {
     return printViaTcp(rawBuffer, target);
 }
 
-module.exports = { printReceipt, parseStations, resolveStation, buildEscposData, stations: () => STATIONS };
+module.exports = {
+    printReceipt,
+    parseStations,
+    resolveStation,
+    buildEscposData,
+    stations: () => STATIONS,
+    registerConfigured: () => REGISTER_CONFIGURED
+};
 // ---------- production tickets ----------
 
 /**

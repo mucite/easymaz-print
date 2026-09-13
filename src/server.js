@@ -3,7 +3,7 @@ const express = require('express');
 const https   = require('https');
 const http    = require('http');
 const fs      = require('fs');
-const { printReceipt, printTicket, stations } = require('./printer');
+const { printReceipt, printTicket, stations, registerConfigured } = require('./printer');
 const { PrintPayloadSchema, TicketPayloadSchema } = require('./validation');
 
 const app  = express();
@@ -124,7 +124,20 @@ app.get('/health', (req, res) => {
     Object.entries(configured).map(([name, t]) => [name, `${t.host}:${t.port}`])
   );
 
-  res.status(200).json({ status: 'ok', tls: !!(SSL_CERT && SSL_KEY), printer, stations: named });
+  // Named stations are optional; the register's own printer is not. Reported rather than assumed,
+  // because with nothing configured the address above is a guess at 127.0.0.1 that looks like a
+  // setting and fails as a refused socket — which reads as a broken printer instead of an
+  // unfinished install. 200 either way: the bridge is up and answering, and that is what a status
+  // code is for. The field is the answer.
+  const register = registerConfigured();
+
+  res.status(200).json({
+    status: register ? 'ok' : 'unconfigured',
+    registerConfigured: register,
+    tls: !!(SSL_CERT && SSL_KEY),
+    printer,
+    stations: named
+  });
 });
 
 /**
@@ -196,9 +209,24 @@ function logPrinterTarget() {
     console.log(`[easymaz-print] Printer CMD  ${process.env.PRINTER_CMD}`);
   } else if (process.env.PRINTER_DEVICE) {
     console.log(`[easymaz-print] Printer USB  ${process.env.PRINTER_DEVICE}`);
+  } else if (process.env.PRINTER_HOST) {
+    console.log(`[easymaz-print] Printer TCP  ${process.env.PRINTER_HOST}:${process.env.PRINTER_PORT || 9100}`);
   } else {
-    console.log(`[easymaz-print] Printer TCP  ${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}`);
+    // Said once, at the top, rather than discovered later as a refused socket per receipt. Named
+    // stations are optional and most restaurants configure none; the register's printer is the one
+    // that is not, because a receipt is a fiscal document with nowhere else to go.
+    console.warn(
+      '[easymaz-print] No register printer configured — set PRINTER_CMD, PRINTER_DEVICE or ' +
+      `PRINTER_HOST. Receipts will be sent to 127.0.0.1:${process.env.PRINTER_PORT || 9100} and fail.`
+    );
   }
+
+  const named = Object.keys(stations());
+  console.log(
+    named.length
+      ? `[easymaz-print] Stations     ${named.join(', ')}`
+      : '[easymaz-print] Stations     none — everything prints at the register'
+  );
 }
 
 function startServer() {
