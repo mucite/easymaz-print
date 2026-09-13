@@ -209,15 +209,17 @@ function logPrinterTarget() {
     console.log(`[easymaz-print] Printer CMD  ${process.env.PRINTER_CMD}`);
   } else if (process.env.PRINTER_DEVICE) {
     console.log(`[easymaz-print] Printer USB  ${process.env.PRINTER_DEVICE}`);
-  } else if (process.env.PRINTER_HOST) {
-    console.log(`[easymaz-print] Printer TCP  ${process.env.PRINTER_HOST}:${process.env.PRINTER_PORT || 9100}`);
+  } else if (process.env.PRINTER_HOST || process.env.PRINTER_IP) {
+    const host = process.env.PRINTER_HOST || process.env.PRINTER_IP;
+    console.log(`[easymaz-print] Printer TCP  ${host}:${process.env.PRINTER_PORT || 9100}`);
   } else {
     // Said once, at the top, rather than discovered later as a refused socket per receipt. Named
     // stations are optional and most restaurants configure none; the register's printer is the one
     // that is not, because a receipt is a fiscal document with nowhere else to go.
     console.warn(
       '[easymaz-print] No register printer configured — set PRINTER_CMD, PRINTER_DEVICE or ' +
-      `PRINTER_HOST. Receipts will be sent to 127.0.0.1:${process.env.PRINTER_PORT || 9100} and fail.`
+      'PRINTER_HOST (PRINTER_IP is accepted too). ' +
+      `Receipts will be sent to 127.0.0.1:${process.env.PRINTER_PORT || 9100} and fail.`
     );
   }
 

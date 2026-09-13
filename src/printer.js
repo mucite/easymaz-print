@@ -10,8 +10,17 @@ const PRINTER_CMD       = process.env.PRINTER_CMD;
 // Linux/Windows raw device file: /dev/usb/lp0  or  \\.\USB001
 const PRINTER_DEVICE    = process.env.PRINTER_DEVICE;
 
-// Network printer (TCP port 9100)
-const PRINTER_HOST      = process.env.PRINTER_HOST || '127.0.0.1';
+// Network printer over Ethernet or Wi-Fi (TCP port 9100). The two are the same socket here; only
+// how the printer got its address differs.
+//
+// PRINTER_IP is accepted as an alias because the two deployment modes disagreed on the name. The
+// systemd env file sets PRINTER_HOST, which is what this reads; docker-compose sets PRINTER_IP in
+// the box's .env and remaps it on the way in. Both spellings are therefore live in the field, in
+// files that look alike, and copying a line from one to the other silently configured nothing —
+// the value never arrived, the default below took over, and every receipt went to this container
+// itself. Reading both is cheaper than expecting anyone to remember which file they are in.
+const CONFIGURED_HOST   = process.env.PRINTER_HOST || process.env.PRINTER_IP;
+const PRINTER_HOST      = CONFIGURED_HOST || '127.0.0.1';
 const PRINTER_PORT      = Number(process.env.PRINTER_PORT) || 9100;
 
 /**
@@ -23,10 +32,10 @@ const PRINTER_PORT      = Number(process.env.PRINTER_PORT) || 9100;
  * restaurant with one printer at the till names none — but the till's own printer is not, because
  * a receipt is a fiscal document and there is nowhere else for it to go.
  *
- * Read from the raw environment, not from PRINTER_HOST above, which can never be empty.
+ * Read from CONFIGURED_HOST, not from PRINTER_HOST above, which can never be empty.
  */
 const REGISTER_CONFIGURED = Boolean(
-    PRINTER_CMD || PRINTER_DEVICE || process.env.PRINTER_HOST
+    PRINTER_CMD || PRINTER_DEVICE || CONFIGURED_HOST
 );
 
 // Defaults for the single unnamed printer, and the fallback for any station that does not say.
