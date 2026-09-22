@@ -6,37 +6,61 @@ network on TCP port 9100.
 It runs on its own: no database, no cloud, no account, nothing else from the till system it normally
 sits behind. Node 20 or newer, a printer on the same network, and that is the whole installation.
 
-## Checking a printer against it
+## Testing a printer
 
-You need the printer's IP address and it must accept raw ESC/POS on port 9100.
+You need the printer's IP address, and the printer must accept raw ESC/POS on TCP port 9100.
+Ethernet and Wi-Fi are the same thing here — only how the printer got its address differs.
+
+Node 20 or newer. Then, from a machine on the same network as the printer:
 
 ```bash
+git clone https://github.com/mucite/easymaz-print.git
+cd easymaz-print
 npm ci
 
-PRINT_SHARED_SECRET=demo \
-PRINTER_HOST=192.168.1.50 \
-PRINTER_PORT=9100 \
-npm start
+npm run test-print 192.168.1.50
 ```
 
-Confirm the bridge agrees with you about what it is driving. This prints nothing:
+A slip comes out of the printer, and the terminal says what it sent:
+
+```
+[test-print] 878 bytes to 192.168.1.50:9100
+[test-print] 48 columns, cp437, full cut
+[test-print] the QR should scan to exactly: EASYMAZ TEST 2026-09-22 08:17:48
+```
+
+That is the whole test. Nothing is configured, no server runs, and no sale is invented. Run it as
+often as you like.
+
+Non-default paper or cut:
+
+```bash
+npm run test-print 192.168.1.50 -- --width 32      # 58 mm paper; 48 (the default) is 80 mm
+npm run test-print 192.168.1.50 -- --cut partial   # a printer that only does partial cuts
+npm run test-print 192.168.1.50:9100 -- --codepage cp850
+```
+
+### Testing the service itself
+
+The above drives the printer directly. To exercise the running service, which is what a till talks
+to, start it and ask it to print:
+
+```bash
+PRINT_SHARED_SECRET=demo PRINTER_HOST=192.168.1.50 npm start
+```
 
 ```bash
 curl localhost:3001/health
+curl -X POST localhost:3001/test-print -H 'x-print-key: demo'
 ```
+
+`/health` prints nothing and reports what the service thinks it is driving:
 
 ```json
 {"status":"ok","registerConfigured":true,"printer":{"mode":"tcp","address":"192.168.1.50:9100"}}
 ```
 
-Then put paper through it:
-
-```bash
-curl -X POST localhost:3001/test-print -H 'x-print-key: demo'
-```
-
-That is the whole test. No payload, no sale, nothing to know about receipts. Press it as often as
-you like.
+The same slip comes out, having travelled the whole path a real receipt takes.
 
 ## Reading the slip
 
