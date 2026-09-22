@@ -4,7 +4,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test-print": "node scripts/test-print.js"
   },
   "author": "Musie Kebede",
   "license": "ISC",
@@ -13,5 +14,8 @@
     "dotenv": "^17.4.2",
     "express": "^4.18.2",
     "zod": "^4.1.12"
+  },
+  "optionalDependencies": {
+    "usb": "^3.1.0"
   }
 }

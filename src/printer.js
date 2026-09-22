@@ -884,16 +884,15 @@ function buildTestPage(info, opts = {}) {
  * somebody holding a terminal and to somebody holding the slip — and a caller who gets a 200 but no
  * paper can read the address back and find they are testing a printer in another room.
  */
-function printTestPage(station) {
-    const target = resolveStation(station);
+/**
+ * The test slip as bytes, without deciding how they travel.
+ *
+ * Separated from the route because the same slip has to be printable with the bridge not running at
+ * all: scripts/test-print.js drives a printer directly, over a socket or over USB, and building the
+ * page twice is how the two drift until the tool stops testing what the bridge sends.
+ */
+function testPageBuffer(target, mode, address) {
     const now = new Date();
-
-    const mode = PRINTER_CMD ? 'cmd' : PRINTER_DEVICE ? 'usb' : 'tcp';
-    const address = PRINTER_CMD
-        ? PRINTER_CMD
-        : PRINTER_DEVICE
-            ? PRINTER_DEVICE
-            : `${target.host}:${target.port}`;
 
     const info = {
         station: target.name,
@@ -917,15 +916,34 @@ function printTestPage(station) {
         cut: target.cut,
         codepage: target.codepage
     });
-    const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
+    const buffer = Buffer.from(toPrintable(data.join('')), 'latin1');
+
+    return { info: { ...info, bytes: buffer.length }, buffer };
+}
+
+function printTestPage(station) {
+    const target = resolveStation(station);
+
+    const mode = PRINTER_CMD ? 'cmd' : PRINTER_DEVICE ? 'usb' : 'tcp';
+    const address = PRINTER_CMD
+        ? PRINTER_CMD
+        : PRINTER_DEVICE
+            ? PRINTER_DEVICE
+            : `${target.host}:${target.port}`;
+
+    const { info, buffer } = testPageBuffer(target, mode, address);
 
     const sent = (PRINTER_CMD || PRINTER_DEVICE)
-        ? (PRINTER_CMD ? printViaCommand(rawBuffer) : printViaDevice(rawBuffer))
-        : printViaTcp(rawBuffer, target);
+        ? (PRINTER_CMD ? printViaCommand(buffer) : printViaDevice(buffer))
+        : printViaTcp(buffer, target);
 
-    return sent.then(() => ({ ...info, bytes: rawBuffer.length }));
+    return sent.then(() => info);
 }
 
 module.exports.printTestPage = printTestPage;
+module.exports.testPageBuffer = testPageBuffer;
+// Exported so the standalone tool sends over a socket exactly the way the bridge does, timeout and
+// error messages included, rather than growing its own half of the same thing.
+module.exports.printViaTcp = printViaTcp;
 module.exports.buildTestPage = buildTestPage;
 module.exports.columnRuler = columnRuler;
