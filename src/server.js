@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const http    = require('http');
-const { printReceipt, printTicket, stations, registerConfigured } = require('./printer');
+const { printReceipt, printTicket, printTestPage, stations, registerConfigured } = require('./printer');
 const { PrintPayloadSchema, TicketPayloadSchema } = require('./validation');
 
 const app  = express();
@@ -178,6 +178,37 @@ app.post('/print', async (req, res) => {
   } catch (err) {
     console.error('Print error:', err);
     return res.status(502).json({ success: false, error: err.message || 'Failed to print' });
+  }
+});
+
+/**
+ * Prints a slip that proves the printer works, carrying no sale.
+ *
+ * The other two routes need a document before they will print anything: a receipt needs a TIN, a
+ * VAT breakdown and an arithmetic-consistent total, and a ticket needs an order. Neither is
+ * something a person holding a newly wired printer has, and inventing a plausible sale to find out
+ * whether paper comes out is a poor first hour — worse on a fiscal device, where the invented sale
+ * prints as a receipt.
+ *
+ * So this route takes nothing. An optional station names which printer to test on a site with
+ * several; absent, it is the register's, which is the whole configuration for most sites.
+ *
+ * Not deduplicated, deliberately. The jobId window exists so a till's retry does not cook the food
+ * twice; somebody testing a printer presses this repeatedly and means it every time.
+ */
+app.post('/test-print', async (req, res) => {
+  const station = (req.body && req.body.station) || req.query.station;
+
+  try {
+    const info = await printTestPage(station);
+    console.log(`[test-print] sent ${info.bytes} bytes to ${info.target} (${info.station})`);
+    return res.json({ success: true, ...info });
+  } catch (err) {
+    // The address is reported alongside the failure because it is the answer half the time: the
+    // bridge is fine and is talking to a printer that is off, or at an address nobody has moved
+    // since it was typed in.
+    console.error(`[test-print] ${err.message}`);
+    return res.status(502).json({ success: false, error: err.message });
   }
 });
 

@@ -145,9 +145,30 @@ async function stayedEmpty(printer, ms = 600) {
  * takes no parameter — swallowing the first letter of whatever follows. The set below is exactly
  * what printer.js emits: ESC @, ESC t/a/E n, GS V n, and ESC p m t1 t2 for the drawer.
  */
+/**
+ * Removes the QR blocks, which are the one command here that carries a length rather than a fixed
+ * number of parameters.
+ *
+ * GS ( k is pL pH and then that many bytes, and the bytes are the payload — so a pattern that eats a
+ * fixed width leaves the payload behind as visible text. That is not cosmetic: it lands on the same
+ * line as whatever follows, and every assertion about how wide the paper is then measures a string
+ * no printer would ever render. The code's own commands go; the text line printed beneath it, which
+ * is what a scan is checked against, is ordinary text and stays.
+ */
+function stripQr(text) {
+  let out = '';
+  for (let i = 0; i < text.length; ) {
+    if (text[i] === '\x1d' && text[i + 1] === '(' && text[i + 2] === 'k') {
+      i += 5 + (text.charCodeAt(i + 3) | (text.charCodeAt(i + 4) << 8));
+      continue;
+    }
+    out += text[i++];
+  }
+  return out;
+}
+
 function paper(printer) {
-  return Buffer.concat(printer.streams)
-    .toString('latin1')
+  return stripQr(Buffer.concat(printer.streams).toString('latin1'))
     .replace(/\x1bp[\s\S]{3}/g, '')
     .replace(/\x1b@/g, '')
     .replace(/\x1b[taE][\s\S]/g, '')
@@ -547,5 +568,156 @@ describe('a till and a kitchen, with no bar', () => {
 
     assert.match(everything, /Tibs/, 'nothing reached the kitchen at all, so this proves nothing');
     assert.doesNotMatch(everything, /260|299|TIN|VAT/);
+  });
+});
+
+/**
+ * The test slip, which is the route somebody reaches for before this bridge has ever seen a sale.
+ *
+ * It is the first thing a new install runs and the only thing a printer manufacturer checking their
+ * model against this bridge runs, so its failures are the expensive kind: they are read as "this
+ * printer is not supported" by someone with no reason to look further. What is asserted here is
+ * what that person would hold — a slip that names the printer it went to, and a ruler that measures
+ * the paper it was laid out for.
+ */
+describe('the test slip', () => {
+  let register, narrow, bridge;
+
+  before(async () => {
+    [register, narrow] = await Promise.all([fakePrinter(), fakePrinter()]);
+    bridge = await startBridge({
+      PRINT_SHARED_SECRET: KEY,
+      PRINTER_HOST: '127.0.0.1',
+      PRINTER_PORT: String(register.port),
+      // 58 mm paper, as a named station, so both widths are exercised on one box.
+      PRINTERS: `counter=127.0.0.1:${narrow.port}:32`
+    });
+  });
+
+  after(async () => {
+    await bridge.stop();
+    await Promise.all([register.close(), narrow.close()]);
+  });
+
+  test('prints with no payload at all, and says where it went', async () => {
+    register.reset();
+    const res = await bridge.post('/test-print', {});
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.station, 'default');
+    assert.equal(res.body.target, `127.0.0.1:${register.port}`);
+    assert.ok(await settled(register), 'nothing reached the printer');
+
+    const slip = paper(register);
+    assert.match(slip, /TEST PRINT/);
+    // The address is on the paper as well as in the response: on a site with several printers the
+    // slip is found in a room, and the room is the thing in doubt.
+    assert.match(slip, new RegExp(String(register.port)));
+    // No sale anywhere on it. This is the whole reason the route exists.
+    assert.doesNotMatch(slip, /\bTIN\b|\bVAT\b|\bTotal\b/i);
+  });
+
+  test('the ruler measures the paper it was laid out for', async () => {
+    register.reset();
+    await bridge.post('/test-print', {});
+    assert.ok(await settled(register));
+
+    // 80 mm paper: 48 columns, and the ruler is exactly that so a wrap on real paper means the
+    // width is wrong rather than the line being long.
+    assert.equal(widestLine(register), 48);
+    assert.match(paper(register), /\.\.\.\.5.*45/);
+
+    // Every fixed line fits the narrowest paper this slip can be sent to, so the same copy does not
+    // wrap on 58 mm. Asserted on the wide printer too, because that is where the copy is edited.
+    const longest = Math.max(
+      ...paper(register)
+        .split(/[\r\n]/)
+        .filter((l) => !/^-+$/.test(l.trim()) && !/^\.*\d/.test(l.trim()))
+        .map((l) => l.trimEnd().length)
+    );
+    assert.ok(longest <= 32, `a fixed line is ${longest} columns and will wrap on 58 mm paper`);
+  });
+
+  test('a named station is tested on its own printer, at its own width', async () => {
+    narrow.reset();
+    register.reset();
+
+    const res = await bridge.post('/test-print', { station: 'counter' });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.station, 'counter');
+    assert.equal(res.body.width, 32);
+    assert.ok(await settled(narrow), 'the named station printed nothing');
+    assert.equal(widestLine(narrow), 32, '58 mm paper was given an 80 mm layout');
+    assert.ok(await stayedEmpty(register), 'the register printed a slip meant for the counter');
+  });
+
+  test('the QR is drawn by the printer, and says what it should scan to', async () => {
+    register.reset();
+    const res = await bridge.post('/test-print', {});
+    assert.ok(await settled(register));
+
+    // Asserted on the raw stream, not on paper(): the QR is control bytes, and the helper that
+    // makes a slip readable is the same helper that would strip the thing under test.
+    const raw = Buffer.concat(register.streams).toString('latin1');
+
+    // The five GS ( k commands, in the order a printer executes them: model, module size, error
+    // correction, store, print. A printer sent only the first four draws nothing.
+    assert.equal((raw.match(/\x1d\(k/g) || []).length, 5, 'the QR command block is incomplete');
+    assert.match(raw, /\x1d\(k\x03\x00\x31\x51\x30/, 'the code was stored but never printed');
+
+    // The payload is stored in the code and printed beneath it, so whoever scans it can check the
+    // result against what the paper says it should be rather than trusting that any output is right.
+    assert.ok(raw.includes('1P0' + res.body.qrPayload), 'the QR payload was not stored');
+    assert.ok(
+      paper(register).includes(res.body.qrPayload),
+      'the payload is in the code but not printed beneath it, so a scan cannot be checked'
+    );
+
+    // ASCII only. qrLines falls back to a text line for anything above 0x7F, because transliteration
+    // on the way to the buffer would alter the bytes inside the code and it would scan to the wrong
+    // thing — a silent fault on a fiscal receipt, and one worth never shipping a test slip that hides.
+    assert.doesNotMatch(res.body.qrPayload, /[^\x20-\x7E]/);
+  });
+
+  test('two presses print two slips', async () => {
+    register.reset();
+    await bridge.post('/test-print', {});
+    await bridge.post('/test-print', {});
+
+    // Receipts and tickets are deduplicated so a till's retry cannot cook the food twice. Somebody
+    // stood at a printer pressing this means it every time, and a second press that silently
+    // printed nothing would read as the printer having died.
+    assert.ok(await settled(register, 2), 'the second test print was swallowed');
+  });
+
+  test('a dead printer answers with the address it could not reach', async () => {
+    const off = await fakePrinter();
+    const port = off.port;
+    await off.close();
+
+    const alone = await startBridge({
+      PRINT_SHARED_SECRET: KEY,
+      PRINTER_HOST: '127.0.0.1',
+      PRINTER_PORT: String(port),
+      PRINTER_TIMEOUT_MS: '1000'
+    });
+
+    try {
+      const res = await alone.post('/test-print', {});
+      assert.equal(res.status, 502);
+      assert.equal(res.body.success, false);
+      // Half of these are a printer that is off or has moved, so the address is the answer and
+      // belongs in the failure rather than only in the log.
+      assert.match(res.body.error, new RegExp(String(port)));
+    } finally {
+      await alone.stop();
+    }
+  });
+
+  test('it still needs the key, because it uses the paper', async () => {
+    const res = await bridge.post('/test-print', {}, null);
+    assert.equal(res.status, 401);
   });
 });

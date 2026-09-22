@@ -749,3 +749,183 @@ function printTicket(ticket) {
 
 module.exports.printTicket = printTicket;
 module.exports.buildTicketData = buildTicketData;
+
+// ---------- self test ----------
+
+/**
+ * A ruler across the paper, so a column width can be read off the slip rather than guessed.
+ *
+ * Every fifth column carries its own number, right-aligned on that column, and the last character
+ * of the line sits in the last column. A printer set to 58 mm paper receiving a 48-column slip
+ * wraps this line, and the wrap is the answer: the ruler is the one line where being one column too
+ * wide is visible instead of merely making a total look untidy.
+ */
+function columnRuler(width) {
+    const marks = new Array(width).fill('.');
+    for (let column = 5; column <= width; column += 5) {
+        const label = String(column);
+        // Right-aligned so the label's last digit lands on the column it names.
+        for (let offset = 0; offset < label.length; offset++) {
+            marks[column - label.length + offset] = label[offset];
+        }
+    }
+    return marks.join('');
+}
+
+/**
+ * A slip that proves a printer works, carrying no sale.
+ *
+ * Built for somebody who has just wired a printer up and wants to know whether this bridge can
+ * drive it — an installer at a till, or a manufacturer checking their model against it. So it
+ * prints the settings it was driven with rather than assuming they are right: a slip that comes out
+ * saying 48 columns on 58 mm paper has diagnosed itself, where a receipt with the same fault just
+ * looks badly laid out.
+ *
+ * Each line below exercises one ESC/POS feature this bridge relies on for real documents — the code
+ * page selected with ESC t, bold, double-height, centring, and the cut. A printer that renders all
+ * of them renders every receipt and ticket this bridge emits, which is the question being asked.
+ *
+ * No cash drawer pulse: a test print should not open the till.
+ */
+function buildTestPage(info, opts = {}) {
+    const ESC = '\x1B';
+    const GS = '\x1D';
+    const LINE_WIDTH = opts.lineWidth || DEFAULT_WIDTH;
+    const FEED_LINES = opts.feedLines || 4;
+    const CUT_STYLE  = opts.cut === 'partial' ? 'partial' : 'full';
+    const CODE_PAGE  = codePageByte(opts.codepage);
+
+    const out = [];
+    const center = () => out.push(ESC + 'a' + '\x01');
+    const left = () => out.push(ESC + 'a' + '\x00');
+    const bold = (on) => out.push(ESC + 'E' + (on ? '\x01' : '\x00'));
+    const big = (on) => out.push(GS + '!' + (on ? '\x11' : '\x00'));
+    const rule = () => out.push('-'.repeat(LINE_WIDTH) + '\n');
+    const field = (label, value) => out.push(label.padEnd(10) + String(value) + '\n');
+
+    out.push(ESC + '@' + ESC + 't' + String.fromCharCode(CODE_PAGE));
+
+    center();
+    bold(true);
+    big(true);
+    out.push('TEST PRINT\n');
+    big(false);
+    out.push('easymaz-print\n');
+    bold(false);
+    left();
+    rule();
+
+    // What the bridge thinks it is driving. The address is here because the commonest fault on a
+    // site with several printers is a correct slip coming out of the wrong room.
+    field('Station', info.station);
+    field('Target', info.target);
+    field('Mode', info.mode);
+    field('Width', LINE_WIDTH + ' columns');
+    field('Codepage', `${opts.codepage || DEFAULT_CODE_PAGE} (ESC t ${CODE_PAGE})`);
+    field('Cut', CUT_STYLE);
+    field('Time', info.printedAt);
+    rule();
+
+    out.push('Ruler ends at the last column.\n');
+    out.push('A wrap means the width is wrong.\n');
+    out.push(columnRuler(LINE_WIDTH) + '\n');
+    rule();
+
+    bold(true);
+    out.push('Bold text\n');
+    bold(false);
+    big(true);
+    out.push('Double\n');
+    big(false);
+    center();
+    out.push('Centred text\n');
+    left();
+    // Accented characters, to show the code page actually took. Wrong table and these come out as
+    // box-drawing characters or Greek, which is the same fault that used to garble an item name.
+    out.push('Accents: cafe 25\xB0C \xE1\xE9\xED\xF3\xFA\n');
+    rule();
+
+    // The QR engine, which is the part of a receipt most likely to be the thing a given printer
+    // cannot do. Every fiscal receipt this bridge prints carries one — the Authority's code under
+    // Art 4(1)(d), and the buyer's own copy — and they are drawn by the printer's own encoder with
+    // GS ( k rather than rasterised here. A model with no QR engine ignores those commands
+    // silently: the receipt prints, looks right, and is missing the one element the Directive
+    // names. So it is tested here, where a blank space is the answer rather than a mystery.
+    //
+    // The payload is printed as text directly beneath it, so a scan can be checked against what it
+    // was supposed to say instead of merely producing something.
+    center();
+    out.push('Scan: should read the line below\n');
+    // Smaller modules on 58 mm paper, where six would run past the edge of the printable area.
+    for (const line of qrLines(info.qrPayload, LINE_WIDTH >= 48 ? 6 : 4)) {
+        out.push(line);
+    }
+    out.push(info.qrPayload + '\n');
+    out.push('Nothing above = no QR engine.\n');
+    left();
+    rule();
+
+    center();
+    out.push('If this slip is complete\n');
+    out.push('and the paper is cut,\n');
+    out.push('the printer is supported.\n');
+    left();
+
+    out.push('\n'.repeat(FEED_LINES));
+    out.push(GS + 'V' + (CUT_STYLE === 'partial' ? '\x01' : '\x00'));
+
+    return out;
+}
+
+/**
+ * Prints the test slip, and reports what it was sent to.
+ *
+ * The return value is the same information printed on the paper, so the answer is available to
+ * somebody holding a terminal and to somebody holding the slip — and a caller who gets a 200 but no
+ * paper can read the address back and find they are testing a printer in another room.
+ */
+function printTestPage(station) {
+    const target = resolveStation(station);
+    const now = new Date();
+
+    const mode = PRINTER_CMD ? 'cmd' : PRINTER_DEVICE ? 'usb' : 'tcp';
+    const address = PRINTER_CMD
+        ? PRINTER_CMD
+        : PRINTER_DEVICE
+            ? PRINTER_DEVICE
+            : `${target.host}:${target.port}`;
+
+    const info = {
+        station: target.name,
+        target: address,
+        mode,
+        time: now.toISOString(),
+        // The ISO stamp above is for the caller; the paper gets a shorter one, because 58 mm paper is
+        // 32 columns and a label plus a full ISO timestamp is 34.
+        printedAt: now.toISOString().replace('T', ' ').slice(0, 19),
+        // ASCII, and 32 characters so it fits 58 mm paper on the line beneath the code. Plain text
+        // rather than a URL: a phone offering to open a link that goes nowhere is a worse answer
+        // than one showing the words the slip says it should show.
+        qrPayload: 'EASYMAZ TEST ' + now.toISOString().replace('T', ' ').slice(0, 19),
+        width: target.width,
+        cut: target.cut,
+        codepage: target.codepage
+    };
+
+    const data = buildTestPage(info, {
+        lineWidth: target.width,
+        cut: target.cut,
+        codepage: target.codepage
+    });
+    const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
+
+    const sent = (PRINTER_CMD || PRINTER_DEVICE)
+        ? (PRINTER_CMD ? printViaCommand(rawBuffer) : printViaDevice(rawBuffer))
+        : printViaTcp(rawBuffer, target);
+
+    return sent.then(() => ({ ...info, bytes: rawBuffer.length }));
+}
+
+module.exports.printTestPage = printTestPage;
+module.exports.buildTestPage = buildTestPage;
+module.exports.columnRuler = columnRuler;
