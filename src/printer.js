@@ -305,6 +305,11 @@ function buildEscposData(receipt, opts = {}) {
     if (receipt.address) centerLines(receipt.address).forEach(l => lines.push(l));
     if (receipt.phone)   centerLines("TEL: " + receipt.phone).forEach(l => lines.push(l));
 
+    // What this piece of paper is, before anything else on it — see statusBanners. Printed here,
+    // under the name and above the taxpayer's identifiers, because the top of the slip is what a
+    // diner reads first and what survives when the bottom is torn off at the cutter.
+    statusBanners(receipt, centerLines, { bill: true }).forEach(l => lines.push(l));
+
     lines.push("\n");
 
     // The taxpayer's four identifiers. Art 4(1) with Art 29(3)(c) asks for all of them
@@ -384,6 +389,11 @@ function buildEscposData(receipt, opts = {}) {
     // issued none yet, the fact that it has not. See fiscalLines.
     fiscalLines(receipt, centerLines, formatInfoLine).forEach(l => lines.push(l));
 
+    // Art 22(5)(c): a reprint says so at both ends, so neither half of a torn slip passes for the
+    // original. The fiscal notice is already repeated by fiscalLines above, and the bill title is
+    // not repeated: it is a title, and one at the top is what makes it one.
+    statusBanners(receipt, centerLines, { fiscal: false }).forEach(l => lines.push(l));
+
     // Art 4(1)(i): the buyer's own copy, fetched from this box by whoever scans it.
     receiptCodeLines(receipt, centerLines).forEach(l => lines.push(l));
 
@@ -407,7 +417,11 @@ function buildEscposData(receipt, opts = {}) {
     // cash drawer wired into the printer's kick port — which is where every one of these is wired —
     // simply never opened. Only for a cash sale that has actually been paid: a card sale has no
     // reason to open it, and an unpaid one is not finished.
-    if (CASH_DRAWER && receipt.paidByCash && receipt.isPaid) {
+    //
+    // And never for a reprint. A DUPLICATE (Art 22(5)(c)) is a copy of a sale whose cash already
+    // went into the drawer when the original printed; a customer asking for their receipt again is
+    // not a reason to hand the cashier an open till with no money going into it.
+    if (CASH_DRAWER && receipt.paidByCash && receipt.isPaid && receipt.isReceiptPrinted !== true) {
         lines.push(ESC + "p" + "\x00" + "\x19" + "\xFA");
     }
 
@@ -547,36 +561,135 @@ function qrLines(payload, moduleSize = 6) {
 }
 
 /**
+ * Whether the fiscal state is one where registration is on its way rather than absent.
+ *
+ * Art 4(4) allows a sale to be taken offline and transmitted when the connection returns, so a slip
+ * in one of these states legitimately exists before its registration does. Every other state
+ * without an IRN — absent, NOT_REQUIRED, REJECTED, CANCELLED, or anything the API adds later — is a
+ * sale the Authority has no record of and is not about to get one of.
+ */
+function awaitingRegistration(receipt) {
+    const state = String(receipt.fiscalState || '').toUpperCase();
+    return state === 'OFFLINE_QUEUED' || state === 'PENDING' || state === 'SUBMITTED';
+}
+
+/**
+ * Whether this slip is a fiscal receipt at all.
+ *
+ * Art 4(1)(c): the system "issues an invoice or receipt only upon transmitting data ... and
+ * obtaining an IRN, RRN and QR code". The IRN is the one that decides it. No sale is transmitted to
+ * the Authority today — there is no published transmission spec and the API's FiscalService is not
+ * wired — so today this is false for every slip that prints, and the slip has to say so.
+ */
+function fiscallyRegistered(receipt) {
+    return Boolean(receipt.irn);
+}
+
+/**
+ * The "NOT A FISCAL RECEIPT" notice, bold and centred.
+ *
+ * Printed at the top, under the business header, and again where the IRN would have been. Never
+ * omitted: the old rule was that a sale with nothing to say about registration said nothing, which
+ * left a slip with a TIN, a VAT line and a total on it looking, to a diner or an inspector, exactly
+ * like the receipt Art 4(1)(c) says only a registered sale may produce.
+ */
+function notFiscalLines(centerLines) {
+    const out = [ESC + 'a' + '\x01', ESC + 'E' + '\x01'];
+    centerLines('NOT A FISCAL RECEIPT').forEach(l => out.push(l));
+    out.push(ESC + 'E' + '\x00');
+    centerLines('Not registered with the Revenue Authority').forEach(l => out.push(l));
+    return out;
+}
+
+/**
+ * The banners that say what this slip is, for the top of the paper and the bottom.
+ *
+ * Three facts, each of which changes what the paper means and none of which a diner can see
+ * otherwise:
+ *
+ *   DUPLICATE              isReceiptPrinted — Art 22(5)(c) requires a copy "clearly marked as a
+ *                          'DUPLICATE'". validation.js has accepted the flag all along; nothing here
+ *                          read it, so a reprint was indistinguishable from the original.
+ *   BILL - NOT A RECEIPT   isPaid === false — a bill presented before payment is not a receipt of
+ *                          anything. Strictly false, not falsy: a payload that omits the flag is an
+ *                          older client, and the payment line below already says UNPAID when it is.
+ *   NOT A FISCAL RECEIPT   no IRN and not on its way to one — see fiscallyRegistered.
+ *
+ * One banner block rather than three separate ones: the bill title first, since it is the larger
+ * claim, and the fiscal notice under it. The caller leaves the printer in whatever alignment it
+ * wants afterwards; this restores centre, which is what the header around it uses.
+ *
+ * @param opts.bill   whether to print the bill title (top only)
+ * @param opts.fiscal whether to print the fiscal notice (top only — fiscalLines prints the bottom one)
+ */
+function statusBanners(receipt, centerLines, opts = {}) {
+    const bill = opts.bill === true;
+    const fiscal = opts.fiscal !== false;
+    const out = [];
+
+    const bold = (text) => {
+        out.push(ESC + 'a' + '\x01');
+        out.push(ESC + 'E' + '\x01');
+        centerLines(text).forEach(l => out.push(l));
+        out.push(ESC + 'E' + '\x00');
+    };
+
+    if (receipt.isReceiptPrinted === true) bold('DUPLICATE');
+    if (bill && receipt.isPaid === false) bold('BILL - NOT A RECEIPT');
+    if (fiscal && !fiscallyRegistered(receipt) && !awaitingRegistration(receipt)) {
+        notFiscalLines(centerLines).forEach(l => out.push(l));
+    }
+
+    if (out.length) out.unshift('\n');
+    return out;
+}
+
+/**
  * What the Authority gave back for this sale, and what to say when it gave nothing.
  *
  * Art 4(3)(c) names three things a registered receipt carries: an IRN, an RRN and a QR code. Until
  * this, a receipt printed the taxpayer's four identifiers and said nothing whatever about the
  * registration that is supposed to make it a fiscal document.
  *
- * A receipt with no IRN is not automatically wrong. Art 4(4) allows a sale to be taken offline and
- * transmitted when the connection returns, so the paper legitimately exists before its registration
- * does — but the customer's copy must not imply it is registered when it is not. OFFLINE_QUEUED and
- * PENDING say so; NOT_REQUIRED is a sale from before the regime and says nothing, because there is
- * nothing to say.
+ * Three cases, and exactly one of them prints:
+ *
+ *   IRN issued          the IRN, the RRN and the Authority's QR.
+ *   on its way          OFFLINE_QUEUED, PENDING or SUBMITTED. Art 4(4) allows a sale to be taken
+ *                       offline and transmitted when the connection returns, so the paper
+ *                       legitimately exists before its registration does — but it must not imply
+ *                       it is registered, so it says it is awaiting registration.
+ *   anything else       NOT A FISCAL RECEIPT. This used to be silence for NOT_REQUIRED and for an
+ *                       absent state, which is every slip printed today: Art 4(1)(c) says a receipt
+ *                       is issued "only upon ... obtaining an IRN, RRN and QR code", so a slip
+ *                       without one has to say what it is rather than leave the reader to assume.
+ *
+ * The Authority's QR is printed only with an IRN. The three are issued together, and a Revenue
+ * Authority code under a "not registered" notice would be the one thing on the slip that
+ * contradicts it.
  */
 function fiscalLines(receipt, centerLines, formatInfoLine) {
     const out = [];
-    const state = String(receipt.fiscalState || '').toUpperCase();
 
-    if (receipt.irn) out.push(formatInfoLine('IRN', receipt.irn));
-    if (receipt.rrn) out.push(formatInfoLine('RRN', receipt.rrn));
+    if (fiscallyRegistered(receipt)) {
+        out.push(formatInfoLine('IRN', receipt.irn));
+        if (receipt.rrn) out.push(formatInfoLine('RRN', receipt.rrn));
 
-    if (receipt.fiscalQr) {
-        out.push('\n');
-        out.push(ESC + 'a' + '\x01');
-        centerLines('Revenue Authority').forEach(l => out.push(l));
-        qrLines(receipt.fiscalQr).forEach(l => out.push(l));
-        out.push('\n');
-        out.push(ESC + 'a' + '\x00');
-    } else if (state === 'OFFLINE_QUEUED' || state === 'PENDING' || state === 'SUBMITTED') {
+        if (receipt.fiscalQr) {
+            out.push('\n');
+            out.push(ESC + 'a' + '\x01');
+            centerLines('Revenue Authority').forEach(l => out.push(l));
+            qrLines(receipt.fiscalQr).forEach(l => out.push(l));
+            out.push('\n');
+            out.push(ESC + 'a' + '\x00');
+        }
+    } else if (awaitingRegistration(receipt)) {
         out.push('\n');
         out.push(ESC + 'a' + '\x01');
         centerLines('Awaiting fiscal registration').forEach(l => out.push(l));
+        out.push(ESC + 'a' + '\x00');
+    } else {
+        out.push('\n');
+        notFiscalLines(centerLines).forEach(l => out.push(l));
         out.push(ESC + 'a' + '\x00');
     }
 

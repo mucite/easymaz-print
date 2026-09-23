@@ -368,7 +368,7 @@ test('the IRN and RRN are printed when the Authority has issued them', () => {
 
 test('the QR goes to the printer as GS ( k, not as a line of text', () => {
   const { buildEscposData } = freshPrinter();
-  const out = buildEscposData(fiscalReceipt({ fiscalQr: 'https://esr.mor.gov.et/v/ABC123' })).join('');
+  const out = buildEscposData(fiscalReceipt({ irn: 'IRN-1', fiscalQr: 'https://esr.mor.gov.et/v/ABC123' })).join('');
   // Model, size, error correction, store, print — all five, in that order.
   assert.ok(out.includes('\x1D(k\x04\x001A2\x00'), 'selects QR model 2');
   assert.ok(out.includes('\x1D(k\x03\x001E1'), 'sets error correction');
@@ -379,7 +379,7 @@ test('the QR goes to the printer as GS ( k, not as a line of text', () => {
 test('the stored length is the payload plus three, little-endian', () => {
   const payload = 'X'.repeat(300);
   const { buildEscposData } = freshPrinter();
-  const out = buildEscposData(fiscalReceipt({ fiscalQr: payload })).join('');
+  const out = buildEscposData(fiscalReceipt({ irn: 'IRN-1', fiscalQr: payload })).join('');
   const expected = '\x1D(k' + String.fromCharCode(303 & 0xFF) + String.fromCharCode(303 >> 8) + '1P0';
   assert.ok(out.includes(expected), 'a payload over 255 bytes needs the high byte set');
 });
@@ -388,7 +388,7 @@ test('a payload the code page would mangle is printed as text rather than encode
   // toPrintable transliterates anything above 0x7F on its way to the buffer, which would alter the
   // bytes inside the QR and produce a code that scans to something the Authority never issued.
   const { buildEscposData } = freshPrinter();
-  const out = buildEscposData(fiscalReceipt({ fiscalQr: 'https://esr.mor.gov.et/ገበታ' })).join('');
+  const out = buildEscposData(fiscalReceipt({ irn: 'IRN-1', fiscalQr: 'https://esr.mor.gov.et/ገበታ' })).join('');
   assert.ok(!out.includes('\x1D(k'), 'no QR command is emitted');
   assert.match(out, /QR: /);
 });
@@ -399,11 +399,14 @@ test('a sale awaiting transmission says so instead of implying it is registered'
   assert.match(out, /Awaiting fiscal registration/);
 });
 
-test('a sale from before the regime says nothing, because there is nothing to say', () => {
+test('a sale from before the regime does not claim to be awaiting registration', () => {
+  // It used to say nothing at all, which left it looking registered. It now says it is not a fiscal
+  // receipt — see the notices below.
   const { buildEscposData } = freshPrinter();
   const out = buildEscposData(fiscalReceipt({ fiscalState: 'NOT_REQUIRED' })).join('');
   assert.ok(!/Awaiting fiscal registration/.test(out));
   assert.ok(!out.includes('\x1D(k'));
+  assert.match(out, /NOT A FISCAL RECEIPT/);
 });
 
 /**
@@ -430,10 +433,139 @@ test('the buyer\'s code and the Authority\'s are labelled apart', () => {
   // Different documents to anybody who scans them: one is a tax registration, one is a bill.
   const { buildEscposData } = freshPrinter();
   const out = buildEscposData(fiscalReceipt({
+    irn: 'IRN-1',
     fiscalQr: 'https://esr.mor.gov.et/v/ABC123',
     receiptUrl: 'http://192.168.1.50/app/r/abc123'
   })).join('');
   assert.match(out, /Revenue Authority/);
   assert.match(out, /Your receipt/);
   assert.ok(out.indexOf('Revenue Authority') < out.indexOf('Your receipt'), 'the tax code comes first');
+});
+
+/**
+ * What the slip is, said on the slip.
+ *
+ * Art 4(1)(c): a receipt is issued "only upon transmitting data ... and obtaining an IRN, RRN and
+ * QR code". Nothing is transmitted to the Authority today, so every slip that prints has no IRN, and
+ * the old rule — say nothing for NOT_REQUIRED or an absent state — left every one of them looking
+ * like a registered receipt. Art 22(5)(c): a copy is "clearly marked as a 'DUPLICATE'".
+ */
+const NOT_FISCAL = 'NOT A FISCAL RECEIPT';
+const count = (haystack, needle) => haystack.split(needle).length - 1;
+
+test('a registered sale prints its IRN and no not-fiscal notice', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({
+    irn: 'IRN-99', rrn: 'RRN-77', fiscalQr: 'https://esr.mor.gov.et/v/ABC123'
+  })).join('');
+  assert.match(out, /IRN-99/);
+  assert.match(out, /RRN-77/);
+  assert.ok(out.includes('1P0https://esr.mor.gov.et/v/ABC123'), 'the Authority QR');
+  assert.ok(!out.includes(NOT_FISCAL));
+  assert.ok(!/Awaiting fiscal registration/.test(out));
+});
+
+for (const state of ['OFFLINE_QUEUED', 'PENDING', 'SUBMITTED', 'pending']) {
+  test(`a sale in ${state} says it is awaiting registration and nothing more`, () => {
+    const { buildEscposData } = freshPrinter();
+    const out = buildEscposData(fiscalReceipt({ fiscalState: state })).join('');
+    assert.strictEqual(count(out, 'Awaiting fiscal registration'), 1);
+    assert.ok(!out.includes(NOT_FISCAL));
+  });
+}
+
+for (const state of [undefined, 'NOT_REQUIRED', 'REJECTED', 'CANCELLED', 'SOMETHING_NEW']) {
+  test(`a sale with no IRN in state ${state} is marked not fiscal, top and bottom`, () => {
+    const { buildEscposData } = freshPrinter();
+    const lines = buildEscposData(fiscalReceipt({ fiscalState: state }));
+    const out = lines.join('');
+
+    assert.strictEqual(count(out, NOT_FISCAL), 2, 'once at the top, once at the bottom');
+    assert.strictEqual(count(out, 'Not registered with the Revenue Authority'), 2);
+    assert.ok(!/Awaiting fiscal registration/.test(out));
+
+    // Bold and centred: ESC a 1, ESC E 1, the notice, ESC E 0.
+    assert.ok(out.includes(ESC + 'a\x01' + ESC + 'E\x01' + NOT_FISCAL + '\n' + ESC + 'E\x00'));
+
+    // The top one sits under the business header, above the identifiers and the items.
+    const first = out.indexOf(NOT_FISCAL);
+    assert.ok(out.indexOf('ZING COFFEE') < first, 'after the business name');
+    assert.ok(first < out.indexOf('TIN: 0012345678'), 'before the identifiers');
+    // The bottom one sits where the IRN would have been: after the total, before the thanks.
+    const last = out.lastIndexOf(NOT_FISCAL);
+    assert.ok(out.indexOf('TOTAL', out.indexOf('Macchiato')) < last, 'after the total');
+    assert.ok(last < out.indexOf('Thank you!'), 'before the footer');
+  });
+}
+
+test('an Authority QR without an IRN is not printed under a not-fiscal notice', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ fiscalQr: 'https://esr.mor.gov.et/v/ABC123' })).join('');
+  assert.ok(out.includes(NOT_FISCAL));
+  assert.ok(!out.includes('\x1D(k'), 'no Authority QR');
+});
+
+test('the notices fit on 58 mm paper', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ isPaid: false, isReceiptPrinted: true }), { lineWidth: 32 }).join('');
+  for (const text of ['NOT A FISCAL RECEIPT', 'BILL - NOT A RECEIPT', 'DUPLICATE']) {
+    assert.ok(out.includes(text), text);
+  }
+  // "Not registered with the Revenue Authority" is 41 characters, so it wraps rather than overrunning.
+  assert.ok(!out.includes('Not registered with the Revenue Authority'));
+  assert.ok(out.includes('Not registered with the Revenue\nAuthority\n'));
+});
+
+test('an unpaid bill is titled as a bill, with the fiscal notice under it', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ isPaid: false })).join('');
+  assert.strictEqual(count(out, 'BILL - NOT A RECEIPT'), 1, 'one title, at the top');
+  const bill = out.indexOf('BILL - NOT A RECEIPT');
+  assert.ok(out.indexOf('ZING COFFEE') < bill);
+  assert.ok(bill < out.indexOf(NOT_FISCAL), 'the bill title, then the fiscal line');
+  assert.ok(out.indexOf(NOT_FISCAL) < out.indexOf('TIN: 0012345678'));
+  assert.ok(out.includes(ESC + 'E\x01' + 'BILL - NOT A RECEIPT\n' + ESC + 'E\x00'), 'bold');
+});
+
+test('a paid sale, or one that does not say, is not titled a bill', () => {
+  const { buildEscposData } = freshPrinter();
+  assert.ok(!buildEscposData(fiscalReceipt({ isPaid: true })).join('').includes('BILL - NOT A RECEIPT'));
+  assert.ok(!buildEscposData(fiscalReceipt({ isPaid: undefined })).join('').includes('BILL - NOT A RECEIPT'));
+});
+
+test('a reprint is marked DUPLICATE at the top and the bottom', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ irn: 'IRN-99', isReceiptPrinted: true })).join('');
+  assert.strictEqual(count(out, 'DUPLICATE'), 2);
+  assert.ok(out.includes(ESC + 'a\x01' + ESC + 'E\x01' + 'DUPLICATE\n' + ESC + 'E\x00'), 'bold and centred');
+  assert.ok(out.indexOf('DUPLICATE') < out.indexOf('TIN: 0012345678'), 'top');
+  assert.ok(out.lastIndexOf('DUPLICATE') > out.indexOf('IRN-99'), 'bottom, after the registration');
+  assert.ok(out.lastIndexOf('DUPLICATE') < out.indexOf('Thank you!'));
+});
+
+test('an original is not marked DUPLICATE', () => {
+  const { buildEscposData } = freshPrinter();
+  assert.ok(!buildEscposData(fiscalReceipt({ isReceiptPrinted: false })).join('').includes('DUPLICATE'));
+  assert.ok(!buildEscposData(fiscalReceipt({})).join('').includes('DUPLICATE'));
+});
+
+test('a reprint of a cash sale does not open the drawer', () => {
+  const { buildEscposData } = freshPrinter();
+  const reprint = { ...CASH_SALE, isReceiptPrinted: true };
+  assert.ok(!buildEscposData(reprint, {}).join('').includes(ESC + 'p'));
+  // The original still does.
+  assert.ok(buildEscposData(CASH_SALE, {}).join('').includes(ESC + 'p' + '\x00' + '\x19' + '\xFA'));
+});
+
+test('a kitchen ticket carries none of the receipt notices', () => {
+  // A ticket is not a sale document, so it has nothing to declare — even for a reprint of an unpaid
+  // order, which is exactly the receipt that carries all three.
+  const { buildTicketData } = freshPrinter();
+  const out = buildTicketData({
+    station: 'kitchen', orderNumber: '9', isPaid: false, isReceiptPrinted: true,
+    items: [{ name: 'Tibs', quantity: 1 }]
+  }).join('');
+  for (const notice of ['NOT A FISCAL RECEIPT', 'BILL - NOT A RECEIPT', 'DUPLICATE']) {
+    assert.ok(!out.includes(notice), notice);
+  }
 });
