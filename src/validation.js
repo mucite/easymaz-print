@@ -52,7 +52,16 @@ const PrintPayloadSchema = z.object({
 
     businessName: z.string().min(1, 'Business name is required'),
     address: z.string().min(1, 'Address is required'),
-    fsNo: z.string().min(1, 'FS number is required'),
+    // The invoice's own serial, continuous per restaurant and assigned when the sale is settled (VAT
+    // Regulation Art 20, through Directive 1142/2026 Art 4(1)(a)). Optional because an unsettled bill
+    // has none yet, and a sale settled before the series existed never will. It used to be required,
+    // and was fed the order's database id to satisfy that — a number that meant nothing to anyone.
+    fsNo: optionalText,
+
+    // The buyer, when they asked to be named on the invoice — Art 23(3).
+    buyerName: optionalText,
+    buyerTin: optionalText,
+    buyerPhone: optionalText,
     orderNumber: z.string().min(1, 'Order number is required'),
     date: z.string().min(1, 'Date is required'),
     invoiceType: z.string().min(1, 'Invoice type is required'),

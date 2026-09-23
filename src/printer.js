@@ -332,6 +332,9 @@ function buildEscposData(receipt, opts = {}) {
     // `value || ""` would have dropped.
     if (receipt.table != null) lines.push(formatInfoLine("Table", receipt.table));
     if (receipt.cashier)     lines.push(formatInfoLine("Cashier", receipt.cashier));
+    // Art 23(3): named on the invoice when the buyer asked to be.
+    if (receipt.buyerName)   lines.push(formatInfoLine("Buyer", receipt.buyerName));
+    if (receipt.buyerTin)    lines.push(formatInfoLine("Buyer TIN", receipt.buyerTin));
     if (receipt.waiter)      lines.push(formatInfoLine("Waiter", receipt.waiter));
 
     lines.push(repeat("-", LINE_WIDTH) + "\n");

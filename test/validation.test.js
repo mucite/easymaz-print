@@ -118,3 +118,9 @@ test('a required field spelled as null is still refused, and named', () => {
   assert.equal(parsed.success, false);
   assert.ok(parsed.error.issues.some(i => i.path.join('.') === 'tin'));
 });
+
+test('a receipt without an invoice number is accepted', () => {
+  const { fsNo, ...rest } = lawful();
+  const result = PrintPayloadSchema.safeParse(rest);
+  assert.ok(result.success, JSON.stringify(result.error?.issues));
+});

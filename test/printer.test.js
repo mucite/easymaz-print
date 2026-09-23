@@ -569,3 +569,19 @@ test('a kitchen ticket carries none of the receipt notices', () => {
     assert.ok(!out.includes(notice), notice);
   }
 });
+
+test('a slip with no invoice number prints without one', () => {
+  const { buildEscposData } = freshPrinter();
+  const withNumber = buildEscposData(fiscalReceipt({ fsNo: 'INV-42' })).join('');
+  const without = buildEscposData(fiscalReceipt({ fsNo: undefined })).join('');
+  assert.ok(withNumber.includes('INV-42'));
+  assert.ok(withNumber.includes('Invoice : '), 'the invoice line, when there is a number');
+  assert.ok(!without.includes('Invoice : '), 'no invoice line when there is no number');
+});
+
+test('the buyer is named on the slip when they asked to be', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ buyerName: 'Abebe Kebede', buyerTin: '0098765432' })).join('');
+  assert.ok(out.includes('Abebe Kebede'));
+  assert.ok(out.includes('0098765432'));
+});
