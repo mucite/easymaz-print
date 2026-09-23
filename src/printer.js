@@ -564,13 +564,16 @@ function qrLines(payload, moduleSize = 6) {
  * Whether the fiscal state is one where registration is on its way rather than absent.
  *
  * Art 4(4) allows a sale to be taken offline and transmitted when the connection returns, so a slip
- * in one of these states legitimately exists before its registration does. Every other state
- * without an IRN — absent, NOT_REQUIRED, REJECTED, CANCELLED, or anything the API adds later — is a
- * sale the Authority has no record of and is not about to get one of.
+ * in one of these states legitimately exists before its registration does: SUBMITTED has been sent,
+ * OFFLINE_QUEUED is queued to be. PENDING is not among them. The API marks every paid sale PENDING —
+ * registration is owed — but nothing sends it until the Authority publishes its specification, so a
+ * PENDING slip is a sale the Authority has no record of and is not about to get one of, the same as
+ * absent, NOT_REQUIRED, REJECTED or CANCELLED. Printing "awaiting" on every receipt would promise a
+ * registration nobody is making.
  */
 function awaitingRegistration(receipt) {
     const state = String(receipt.fiscalState || '').toUpperCase();
-    return state === 'OFFLINE_QUEUED' || state === 'PENDING' || state === 'SUBMITTED';
+    return state === 'OFFLINE_QUEUED' || state === 'SUBMITTED';
 }
 
 /**

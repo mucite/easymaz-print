@@ -465,7 +465,7 @@ test('a registered sale prints its IRN and no not-fiscal notice', () => {
   assert.ok(!/Awaiting fiscal registration/.test(out));
 });
 
-for (const state of ['OFFLINE_QUEUED', 'PENDING', 'SUBMITTED', 'pending']) {
+for (const state of ['OFFLINE_QUEUED', 'SUBMITTED', 'submitted']) {
   test(`a sale in ${state} says it is awaiting registration and nothing more`, () => {
     const { buildEscposData } = freshPrinter();
     const out = buildEscposData(fiscalReceipt({ fiscalState: state })).join('');
@@ -474,7 +474,7 @@ for (const state of ['OFFLINE_QUEUED', 'PENDING', 'SUBMITTED', 'pending']) {
   });
 }
 
-for (const state of [undefined, 'NOT_REQUIRED', 'REJECTED', 'CANCELLED', 'SOMETHING_NEW']) {
+for (const state of [undefined, 'PENDING', 'pending', 'NOT_REQUIRED', 'REJECTED', 'CANCELLED', 'SOMETHING_NEW']) {
   test(`a sale with no IRN in state ${state} is marked not fiscal, top and bottom`, () => {
     const { buildEscposData } = freshPrinter();
     const lines = buildEscposData(fiscalReceipt({ fiscalState: state }));
