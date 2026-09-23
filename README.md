@@ -1,10 +1,10 @@
 # easymaz-print
 
-An HTTP bridge that turns JSON into paper. It speaks raw ESC/POS to a thermal printer over the
-network on TCP port 9100.
+An HTTP bridge that turns JSON into paper. It speaks raw ESC/POS to an 80 mm thermal printer over
+the network on TCP port 9100, or over USB.
 
 It runs on its own: no database, no cloud, no account, nothing else from the till system it normally
-sits behind. Node 20 or newer, a printer on the same network, and that is the whole installation.
+sits behind. Node 20 or newer and a printer, and that is the whole installation.
 
 ## Testing a printer
 
@@ -39,6 +39,20 @@ npm run test-print 192.168.1.50 -- --width 32      # 58 mm paper; 48 (the defaul
 npm run test-print 192.168.1.50 -- --cut partial   # a printer that only does partial cuts
 npm run test-print 192.168.1.50:9100 -- --codepage cp850
 ```
+
+### A USB printer
+
+The same slip, sent over USB instead of the network. Plug the printer in, then:
+
+```bash
+npm run test-print -- --usb
+```
+
+This finds the printer by its USB printer class through libusb, so it needs no print queue and no
+device path, and works on macOS as well as Linux. The other options above apply unchanged.
+
+Behind a till, the bridge writes to the printer's device file instead of a socket: set
+`PRINTER_DEVICE` (on Linux, usually `/dev/usb/lp0`) and leave `PRINTER_HOST` unset.
 
 ### Testing the service itself
 
@@ -127,11 +141,13 @@ The response says where it tried.
 | Variable | Default | What it does |
 |---|---|---|
 | `PRINTER_HOST` | `127.0.0.1` | Printer IP address. |
+| `PRINTER_DEVICE` | — | A USB printer's device file, such as `/dev/usb/lp0`. Used instead of `PRINTER_HOST` when set. |
 | `PRINTER_PORT` | `9100` | Printer port. |
 | `PRINTER_WIDTH` | `48` | Columns at Font A. **48 for 80 mm paper, 32 for 58 mm.** |
 | `PRINTER_CUT` | `full` | `full` or `partial`. |
 | `PRINTER_CODEPAGE` | `cp437` | Table selected with `ESC t`. |
 | `PRINTER_TIMEOUT_MS` | `5000` | Connect timeout. |
+| `CASH_DRAWER` | `on` | Pulse the printer's drawer kick port (RJ11) at the end of a cash sale. `off` for a site with no drawer. |
 | `PRINT_SHARED_SECRET` | — | Required by every route but `/health`. Unset, the bridge refuses to print. |
 | `PORT` | `3001` | HTTP port to listen on. |
 
