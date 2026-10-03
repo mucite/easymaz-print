@@ -169,6 +169,38 @@ function resolveStation(station) {
 const CONNECT_TIMEOUT_MS = Number(process.env.PRINTER_TIMEOUT_MS) || 5000;
 
 /**
+ * The receipt as it may go to paper. Only a sale carries the Authority's codes, or a link to a
+ * receipt.
+ *
+ * Directive 1142/2026 ties them to an issued receipt and nothing else. A system issues a receipt
+ * "only upon transmitting data to the Electronic Receipt Registration System, confirming its
+ * validity, and obtaining an IRN, an RRN and a QR Code" (Art 4(1)(c)), prints the three "issued by
+ * the Electronic Receipt Registration System" (Art 4(1)(d)), and a registered electronic invoice is
+ * one that has been "assigned an IRN and a QR Code" (Art 2(3)). A bill presented before payment is
+ * not a sale, so none of the three belongs on it, and neither does the diner's receipt link, the
+ * Art 4(1)(i) delivery of "a registered receipt".
+ *
+ * The API registers an order only when it is paid for, and the admin app strips these from an
+ * unpaid payload before sending it (withoutUnpaidCodes). This is the bridge's own copy of the rule,
+ * because the bridge prints whatever it is handed: a bill takes the unregistered branch whatever
+ * the payload says.
+ *
+ * Sold means paymentStatus PAID or REFUNDED, in either case. A refund reverses a sale that was
+ * registered, and a DUPLICATE of that receipt has to match the registered record (Art 27(3)). With
+ * no status, isPaid decides, and only true counts.
+ */
+function isSold(receipt) {
+    if (!receipt.paymentStatus) return receipt.isPaid === true;
+    const status = String(receipt.paymentStatus).toUpperCase();
+    return status === 'PAID' || status === 'REFUNDED';
+}
+
+function withoutUnsoldCodes(receipt) {
+    if (isSold(receipt)) return receipt;
+    return { ...receipt, irn: undefined, rrn: undefined, fiscalQr: undefined, receiptUrl: undefined };
+}
+
+/**
  * Build an ESC/POS data array from a PrintPayload object.
  * Options:
  *   lineWidth: chars per line (32, 42, 48...) default 32
@@ -176,6 +208,7 @@ const CONNECT_TIMEOUT_MS = Number(process.env.PRINTER_TIMEOUT_MS) || 5000;
  *   feedLines: blank lines before cut
  */
 function buildEscposData(receipt, opts = {}) {
+    receipt = withoutUnsoldCodes(receipt);
     const ESC = '\x1B';
     const GS  = '\x1D';
 
@@ -772,6 +805,7 @@ module.exports = {
     parseStations,
     resolveStation,
     buildEscposData,
+    withoutUnsoldCodes,
     stations: () => STATIONS,
     registerConfigured: () => REGISTER_CONFIGURED
 };

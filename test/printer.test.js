@@ -585,3 +585,54 @@ test('the buyer is named on the slip when they asked to be', () => {
   assert.ok(out.includes('Abebe Kebede'));
   assert.ok(out.includes('0098765432'));
 });
+
+/**
+ * Directive 1142/2026 Art 4(1)(c), 4(1)(d) and 2(3): the IRN, the RRN and the Authority's QR belong
+ * to an issued receipt, which is a sale. A bill printed before payment carries none of them, and no
+ * link to a receipt either, whatever the payload says.
+ */
+const REGISTERED = {
+  irn: 'IRN-1',
+  rrn: 'RRN-1',
+  fiscalQr: 'https://esr.mor.gov.et/v/ABC123',
+  receiptUrl: 'http://192.168.1.50/app/r/abc123'
+};
+
+for (const paymentStatus of ['UNPAID', 'INITIATED', 'FAILED', 'CANCELLED', 'REJECTED', 'pending']) {
+  test(`a bill whose payment is ${paymentStatus} prints no IRN, RRN, fiscal QR or receipt code`, () => {
+    const { buildEscposData } = freshPrinter();
+    const out = buildEscposData(fiscalReceipt({ ...REGISTERED, paymentStatus, isPaid: true })).join('');
+    assert.ok(!out.includes('IRN-1'), 'no IRN');
+    assert.ok(!out.includes('RRN-1'), 'no RRN');
+    // Not /Revenue Authority/: the not-fiscal notice names the Authority too.
+    assert.ok(!out.includes('esr.mor.gov.et'), 'no fiscal QR');
+    assert.ok(!/Your receipt/.test(out), 'no receipt code');
+    assert.match(out, /NOT A FISCAL RECEIPT/, 'and it says what it is');
+  });
+}
+
+test('a payload with no status and isPaid false is a bill, and loses the codes', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ ...REGISTERED, isPaid: false })).join('');
+  assert.ok(!out.includes('IRN-1'));
+  assert.ok(!/Your receipt/.test(out));
+});
+
+for (const paymentStatus of ['PAID', 'paid', 'REFUNDED']) {
+  test(`a ${paymentStatus} sale keeps its IRN, RRN, fiscal QR and receipt code`, () => {
+    const { buildEscposData } = freshPrinter();
+    const out = buildEscposData(fiscalReceipt({ ...REGISTERED, paymentStatus })).join('');
+    assert.ok(out.includes('IRN-1'));
+    assert.ok(out.includes('RRN-1'));
+    assert.ok(out.includes('esr.mor.gov.et'));
+    assert.match(out, /Your receipt/);
+  });
+}
+
+test('stripping the codes leaves the payload it was given alone', () => {
+  const { withoutUnsoldCodes } = freshPrinter();
+  const input = { ...REGISTERED, paymentStatus: 'UNPAID' };
+  withoutUnsoldCodes(input);
+  assert.strictEqual(input.irn, 'IRN-1');
+});
+
