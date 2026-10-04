@@ -8,8 +8,8 @@ sits behind. Node 20 or newer and a printer, and that is the whole installation.
 
 ## Testing a printer
 
-You need the printer's IP address, and the printer must accept raw ESC/POS on TCP port 9100.
-Ethernet and Wi-Fi are the same thing here — only how the printer got its address differs.
+You need the printer's IP address, and the printer must accept raw ESC/POS on TCP port 9100 over
+ethernet.
 
 Node 20 or newer. Then, from a machine on the same network as the printer:
 

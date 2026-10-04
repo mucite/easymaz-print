@@ -9,7 +9,7 @@ const app  = express();
 const PORT = Number(process.env.PORT) || 3001;
 
 // No CORS, and no TLS. Both existed for a browser talking to this bridge directly — an admin page
-// on the restaurant's WiFi reaching a mkcert-secured https://192.168.x.x, with an origin allowlist
+// on the restaurant's network reaching a mkcert-secured https://192.168.x.x, with an origin allowlist
 // deciding who could ask.
 //
 // Nothing does that now. Receipts and tickets go through the API, which relays them over the
@@ -27,7 +27,7 @@ app.use(express.json());
  * The shared secret this bridge will accept print jobs with.
  *
  * Until this existed the only protection was CORS, which is a rule browsers agree to follow and
- * nothing else does — a plain POST from anywhere on the restaurant's WiFi printed whatever it liked
+ * nothing else does — a plain POST from anywhere on the restaurant's network printed whatever it liked
  * on the till or kitchen printer. On a fiscal device that is a forged receipt, not a prank.
  */
 const PRINT_KEY = process.env.PRINT_SHARED_SECRET || '';

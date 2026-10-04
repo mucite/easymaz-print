@@ -11,8 +11,7 @@ const PRINTER_CMD       = process.env.PRINTER_CMD;
 // Linux/Windows raw device file: /dev/usb/lp0  or  \\.\USB001
 const PRINTER_DEVICE    = process.env.PRINTER_DEVICE;
 
-// Network printer over Ethernet or Wi-Fi (TCP port 9100). The two are the same socket here; only
-// how the printer got its address differs.
+// Ethernet printer (TCP port 9100).
 //
 // PRINTER_IP is accepted as an alias. The box's .env names it that way — it is what an installer
 // standing at the till calls it — and docker-compose remaps it to the name read here. Kept as an
