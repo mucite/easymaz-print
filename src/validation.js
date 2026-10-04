@@ -149,6 +149,9 @@ const TicketPayloadSchema = z.object({
     table: z.number().nullable().optional(),
     time: optionalText,
     waiter: optionalText,
+    // A second copy of a ticket the kitchen may already have. Printed as such, so nobody cooks the
+    // order twice.
+    reprint: z.boolean().optional(),
     items: z.array(TicketItemSchema).min(1, 'A ticket with no items is not worth printing')
 });
 

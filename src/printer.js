@@ -930,6 +930,13 @@ function buildTicketData(ticket, opts = {}) {
     big(false);
     bold(false);
 
+    // Before the food, where it cannot be missed: this order may already be on the pass.
+    if (ticket.reprint) {
+        bold(true);
+        out.push('*** REPRINT ***\n');
+        bold(false);
+    }
+
     // The table is what a waiter carries the plate to, so it is the largest thing after the
     // station. An order number identifies the ticket if two tables order the same thing.
     if (ticket.table !== null && ticket.table !== undefined) {

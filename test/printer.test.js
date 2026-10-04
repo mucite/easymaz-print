@@ -125,6 +125,14 @@ test('a ticket names its station and its table in double-height type', () => {
   assert.ok(out.includes('\x1D!\x11'), 'expected double-size type');
 });
 
+test('a reprinted ticket says so, and a first one does not', () => {
+  const { buildTicketData } = freshPrinter();
+  const ticket = { orderNumber: '4', items: [{ name: 'Tibs', quantity: 1 }] };
+
+  assert.match(buildTicketData({ ...ticket, reprint: true }).join(''), /REPRINT/);
+  assert.ok(!buildTicketData(ticket).join('').includes('REPRINT'));
+});
+
 test('a ticket carries no money at all', () => {
   const { buildTicketData } = freshPrinter();
   const out = buildTicketData({
