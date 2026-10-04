@@ -10,8 +10,8 @@ const fs  = require('fs');
  *
  *   USB      — a usblp node under /dev/usb. compose mounts the directory, so a printer plugged in
  *              after the bridge started is seen too, and so is lp0 becoming lp1 after a replug.
- *   Network  — Ethernet and Wi-Fi printers are the same thing here: raw ESC/POS on TCP 9100. The
- *              box's own LAN (BOX_LAN_ADDRESS, the /24 it is on) is probed for that port.
+ *   Ethernet — raw ESC/POS on TCP 9100. The box's own LAN (BOX_LAN_ADDRESS, the /24 it is on) is
+ *              probed for that port.
  *
  * The network guess is taken only when it is unambiguous. A hotel has a printer in the kitchen and
  * one at the bar on the same network, and a fiscal receipt printed in the kitchen is worse than one

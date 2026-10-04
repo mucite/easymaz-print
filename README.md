@@ -53,7 +53,7 @@ device path, and works on macOS as well as Linux. The other options above apply 
 
 Behind a till, the bridge finds the printer by itself when nothing is configured: a USB printer
 plugged in (`/dev/usb/lp*`) is used first; otherwise it looks over the box's network
-(`BOX_LAN_ADDRESS`, its /24) for a printer on port 9100 — Ethernet and Wi-Fi alike — and uses it when
+(`BOX_LAN_ADDRESS`, its /24) for an ethernet printer on port 9100, and uses it when
 exactly one answers. With several it picks none and asks for `PRINTER_HOST`, so a receipt cannot
 print in the kitchen. `PRINTER_DEVICE` or `PRINTER_HOST` pin a printer and always win.
 
