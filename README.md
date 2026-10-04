@@ -51,8 +51,11 @@ npm run test-print -- --usb
 This finds the printer by its USB printer class through libusb, so it needs no print queue and no
 device path, and works on macOS as well as Linux. The other options above apply unchanged.
 
-Behind a till, the bridge writes to the printer's device file instead of a socket: set
-`PRINTER_DEVICE` (on Linux, usually `/dev/usb/lp0`) and leave `PRINTER_HOST` unset.
+Behind a till, the bridge finds the printer by itself when nothing is configured: a USB printer
+plugged in (`/dev/usb/lp*`) is used first; otherwise it looks over the box's network
+(`BOX_LAN_ADDRESS`, its /24) for a printer on port 9100 — Ethernet and Wi-Fi alike — and uses it when
+exactly one answers. With several it picks none and asks for `PRINTER_HOST`, so a receipt cannot
+print in the kitchen. `PRINTER_DEVICE` or `PRINTER_HOST` pin a printer and always win.
 
 ### Testing the service itself
 
@@ -131,7 +134,7 @@ The response says where it tried.
 | Response | Meaning |
 |---|---|
 | `ECONNREFUSED` or `timed out` | Nothing is answering on port 9100 at that address. Check the printer is on, on the same network, and that the address is current. |
-| `"status":"unconfigured"` from `/health` | No address was set, so the bridge is falling back to `127.0.0.1:9100` and will fail in a way that looks like a dead printer. Set `PRINTER_HOST`. |
+| `"status":"unconfigured"` from `/health` | Nothing was configured and no printer was found: none plugged in by USB, and no single printer answering on port 9100 on the box's network. `printer.candidates` lists them when several answer. Plug it in or switch it on, or set `PRINTER_HOST` / `PRINTER_DEVICE`. |
 | `503 Printing is not configured` | `PRINT_SHARED_SECRET` is unset. |
 | `401 Not authorised to print here` | The `x-print-key` header does not match that secret. |
 | `200` and no paper | Read `target` in the response. You are testing a printer somewhere else. |
@@ -140,8 +143,9 @@ The response says where it tried.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `PRINTER_HOST` | `127.0.0.1` | Printer IP address. |
-| `PRINTER_DEVICE` | — | A USB printer's device file, such as `/dev/usb/lp0`. Used instead of `PRINTER_HOST` when set. |
+| `PRINTER_HOST` | found | Printer IP address. Unset, a single printer on the box's network is found. |
+| `PRINTER_DEVICE` | found | A USB printer's device file, such as `/dev/usb/lp0`. Unset, any `/dev/usb/lp*` is used; set but missing (renumbered), the one that is there. Wins over `PRINTER_HOST`. |
+| `BOX_LAN_ADDRESS` | — | The box's own LAN address; its /24 is where a network printer is looked for. |
 | `PRINTER_PORT` | `9100` | Printer port. |
 | `PRINTER_WIDTH` | `48` | Columns at Font A. **48 for 80 mm paper, 32 for 58 mm.** |
 | `PRINTER_CUT` | `full` | `full` or `partial`. |

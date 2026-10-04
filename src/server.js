@@ -1,7 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const http    = require('http');
-const { printReceipt, printTicket, printTestPage, stations, registerConfigured } = require('./printer');
+const { printReceipt, printTicket, printTestPage, stations, registerConfigured, defaultPrinterStatus } = require('./printer');
+const { networkPrinter } = require('./discovery');
 const { PrintPayloadSchema, TicketPayloadSchema } = require('./validation');
 
 const app  = express();
@@ -89,11 +90,9 @@ function markPrinted(jobId) {
 }
 
 app.get('/health', (req, res) => {
-  const printer = process.env.PRINTER_CMD
-    ? { mode: 'cmd', command: process.env.PRINTER_CMD }
-    : process.env.PRINTER_DEVICE
-      ? { mode: 'usb', device: process.env.PRINTER_DEVICE }
-      : { mode: 'tcp', address: `${process.env.PRINTER_HOST || '127.0.0.1'}:${process.env.PRINTER_PORT || 9100}` };
+  // Where the register printer is, configured or found. `auto` says it was found rather than set;
+  // mode "none" means nothing is plugged in and no single network printer answered the last look.
+  const printer = defaultPrinterStatus();
 
   // The configured stations are reported so an installer can confirm what the box thinks it has
   // without printing a test ticket at every one of them.
@@ -221,14 +220,24 @@ function logPrinterTarget() {
     const host = process.env.PRINTER_HOST || process.env.PRINTER_IP;
     console.log(`[easymaz-print] Printer TCP  ${host}:${process.env.PRINTER_PORT || 9100}`);
   } else {
-    // Said once, at the top, rather than discovered later as a refused socket per receipt. Named
-    // stations are optional and most restaurants configure none; the register's printer is the one
-    // that is not, because a receipt is a fiscal document with nowhere else to go.
-    console.warn(
-      '[easymaz-print] No register printer configured — set PRINTER_CMD, PRINTER_DEVICE or ' +
-      'PRINTER_HOST (PRINTER_IP is accepted too). ' +
-      `Receipts will be sent to 127.0.0.1:${process.env.PRINTER_PORT || 9100} and fail.`
-    );
+    // Nothing configured is the ordinary case now: the register printer is found, not typed in. A
+    // USB printer is used as soon as it is plugged in; otherwise the box's LAN is looked over for a
+    // single printer on the raw port, now rather than on the first receipt, so that receipt does
+    // not wait on the scan.
+    const found = defaultPrinterStatus();
+    if (found.mode === 'usb') {
+      console.log(`[easymaz-print] Printer USB  ${found.device} (found)`);
+    } else {
+      console.log('[easymaz-print] Printer      none configured — looking for one (USB, or the network)');
+      networkPrinter({ port: Number(process.env.PRINTER_PORT) || 9100 })
+        .then(({ host, candidates, noLan }) => {
+          if (host) console.log(`[easymaz-print] Printer TCP  ${host} (found)`);
+          else if (noLan) console.warn('[easymaz-print] BOX_LAN_ADDRESS is unset, so the network is not searched — plug a USB printer in or set PRINTER_IP');
+          else if (candidates.length > 1) console.warn(`[easymaz-print] several printers answer (${candidates.join(', ')}) — set PRINTER_IP to the till's`);
+          else console.warn('[easymaz-print] no printer found yet — plug one in by USB or connect it to the network; each receipt looks again');
+        })
+        .catch(() => {});
+    }
   }
 
   const named = Object.keys(stations());

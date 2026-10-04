@@ -422,7 +422,9 @@ describe('a box nobody finished setting up', () => {
   let bridge;
 
   before(async () => {
-    bridge = await startBridge({ PRINT_SHARED_SECRET: KEY });
+    // An empty USB directory and no LAN address: nothing plugged in, nowhere to search.
+    const emptyUsb = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'usb-'));
+    bridge = await startBridge({ PRINT_SHARED_SECRET: KEY, PRINTER_USB_DIR: emptyUsb });
   });
 
   after(async () => {
@@ -432,15 +434,17 @@ describe('a box nobody finished setting up', () => {
   /**
    * With no printer named, the bridge used to assume 127.0.0.1 — itself, inside its own container —
    * and every receipt failed as a refused socket, which reads as a dead printer rather than an
-   * install that was never finished. Named stations stay optional; the register's own printer is
-   * not, because a receipt is a fiscal document with nowhere else to go.
+   * install that was never finished. Now it looks for one (USB, then the network), and with none
+   * found it still says the register is not set up rather than pretending.
    */
   test('says so, rather than guessing at a printer', async () => {
     const health = await bridge.health();
 
     assert.strictEqual(health.status, 'unconfigured');
     assert.strictEqual(health.registerConfigured, false);
-    assert.match(bridge.log(), /No register printer configured/);
+    assert.strictEqual(health.printer.mode, 'none');
+    assert.match(bridge.log(), /looking for one/);
+    assert.doesNotMatch(bridge.log(), /127\.0\.0\.1/);
   });
 });
 

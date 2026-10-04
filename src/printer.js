@@ -2,6 +2,7 @@ const net    = require('net');
 const fs     = require('fs');
 const { spawn } = require('child_process');
 const { codePageByte, toPrintable } = require('./charset');
+const discovery = require('./discovery');
 
 // Mac/Linux CUPS:  PRINTER_CMD=lp -d "TM-T88V" -o raw -
 // Linux pipe:      PRINTER_CMD=cat > /dev/usb/lp0   (alternative to PRINTER_DEVICE)
@@ -488,10 +489,10 @@ function printViaCommand(rawBuffer) {
 }
 
 // ---------- USB device file (Linux/Mac: /dev/usb/lp0, Windows: \\.\USB001) ----------
-function printViaDevice(rawBuffer) {
+function printViaDevice(rawBuffer, device = PRINTER_DEVICE) {
     return new Promise((resolve, reject) => {
         // 'a' flag — non-destructive append; avoids truncating the device
-        const stream = fs.createWriteStream(PRINTER_DEVICE, { flags: 'a' });
+        const stream = fs.createWriteStream(device, { flags: 'a' });
         let settled = false;
 
         const done = (err) => {
@@ -501,7 +502,7 @@ function printViaDevice(rawBuffer) {
         };
 
         stream.on('error', (err) =>
-            done(new Error(`USB device error (${PRINTER_DEVICE}): ${err.message}`))
+            done(new Error(`USB device error (${device}): ${err.message}`))
         );
         stream.write(rawBuffer, (err) => {
             if (err) return done(new Error(`USB write error: ${err.message}`));
@@ -542,6 +543,96 @@ function printViaTcp(rawBuffer, target) {
             });
         });
     });
+}
+
+// ---------- where the till's own printer is ----------
+
+/**
+ * How to reach the register printer right now: { mode, device | host+port, auto }.
+ *
+ * What was configured wins, in the order it always did — a command, then a device, then an address.
+ * Nothing configured is no longer a guess at 127.0.0.1: a USB printer plugged in is used, then a
+ * single network printer on the box's LAN (see discovery.js). Asked per print, not once at start,
+ * so a printer plugged in or switched on after the box came up is found by the next receipt.
+ *
+ * A configured device that is not there — lp0 became lp1 when somebody replugged it — falls back to
+ * the USB printer that is there. There is one USB printer at a till, so that is the same printer.
+ */
+async function defaultTransport() {
+    if (PRINTER_CMD) return { mode: 'cmd', auto: false };
+    if (PRINTER_DEVICE) {
+        if (fs.existsSync(PRINTER_DEVICE)) return { mode: 'usb', device: PRINTER_DEVICE, auto: false };
+        const node = discovery.findUsbNode();
+        if (node) {
+            console.warn(`[printer] ${PRINTER_DEVICE} is not there; printing to ${node}, the USB printer that is`);
+            return { mode: 'usb', device: node, auto: true };
+        }
+        // Left to fail on the configured path, which names what was expected.
+        return { mode: 'usb', device: PRINTER_DEVICE, auto: false };
+    }
+    if (CONFIGURED_HOST) return { mode: 'tcp', host: PRINTER_HOST, port: PRINTER_PORT, auto: false };
+
+    const node = discovery.findUsbNode();
+    if (node) return { mode: 'usb', device: node, auto: true };
+
+    const { host, candidates, noLan } = await discovery.networkPrinter({ port: PRINTER_PORT });
+    if (host) return { mode: 'tcp', host, port: PRINTER_PORT, auto: true };
+
+    if (candidates && candidates.length > 1) {
+        throw new Error(
+            `Several printers answer on port ${PRINTER_PORT} (${candidates.join(', ')}). ` +
+            `Set PRINTER_IP to the till's one so a receipt cannot print in the kitchen.`
+        );
+    }
+    throw new Error(
+        'No printer found: none is plugged in by USB' +
+        (noLan ? '' : `, and nothing on this network answers on port ${PRINTER_PORT}`) +
+        '. Plug the printer in or switch it on and connect it to the restaurant\'s network; ' +
+        'or set PRINTER_DEVICE / PRINTER_IP.'
+    );
+}
+
+/**
+ * Sends a finished job. A named station is an address by definition; anything else goes to the
+ * register printer, wherever defaultTransport finds it.
+ */
+async function send(rawBuffer, target, station) {
+    const named = target.name !== 'default';
+    if (named) {
+        if (PRINTER_CMD || PRINTER_DEVICE) {
+            // Unchanged: with a single command or device configured, a station cannot mean anything.
+            console.warn(`[printer] station "${station}" ignored: PRINTER_CMD/PRINTER_DEVICE addresses one printer`);
+        } else {
+            return printViaTcp(rawBuffer, target);
+        }
+    } else if (station) {
+        // resolveStation already said it fell back to the default.
+    }
+
+    const t = await defaultTransport();
+    if (t.mode === 'cmd') return printViaCommand(rawBuffer);
+    if (t.mode === 'usb') return printViaDevice(rawBuffer, t.device);
+    return printViaTcp(rawBuffer, { ...target, host: t.host, port: t.port }).catch(err => {
+        // A found printer that stopped answering may have taken a new lease; look again next time.
+        if (t.auto) discovery.forgetNetworkPrinter();
+        throw err;
+    });
+}
+
+/** The register printer as the bridge would reach it now, for /health. Never scans. */
+function defaultPrinterStatus() {
+    if (PRINTER_CMD) return { mode: 'cmd', command: PRINTER_CMD, auto: false };
+    if (PRINTER_DEVICE) {
+        const present = fs.existsSync(PRINTER_DEVICE);
+        const node = present ? PRINTER_DEVICE : discovery.findUsbNode();
+        return { mode: 'usb', device: node || PRINTER_DEVICE, present: Boolean(node), auto: !present && Boolean(node) };
+    }
+    if (CONFIGURED_HOST) return { mode: 'tcp', address: `${PRINTER_HOST}:${PRINTER_PORT}`, auto: false };
+    const node = discovery.findUsbNode();
+    if (node) return { mode: 'usb', device: node, present: true, auto: true };
+    const net = discovery.cachedNetworkPrinter();
+    if (net.host) return { mode: 'tcp', address: `${net.host}:${PRINTER_PORT}`, auto: true };
+    return { mode: 'none', auto: true, candidates: net.candidates };
 }
 
 // ---------- public entry point ----------
@@ -786,18 +877,7 @@ function printReceipt(receipt, station) {
     // stream rather than to each field.
     const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
 
-    // A command or a USB device is one physical printer by definition, so a station cannot mean
-    // anything there. Worth saying out loud rather than ignoring silently.
-    if (PRINTER_CMD || PRINTER_DEVICE) {
-        if (station) {
-            console.warn(
-                `[printer] station "${station}" ignored: PRINTER_CMD/PRINTER_DEVICE addresses one printer`
-            );
-        }
-        return PRINTER_CMD ? printViaCommand(rawBuffer) : printViaDevice(rawBuffer);
-    }
-
-    return printViaTcp(rawBuffer, target);
+    return send(rawBuffer, target, station);
 }
 
 module.exports = {
@@ -807,7 +887,10 @@ module.exports = {
     buildEscposData,
     withoutUnsoldCodes,
     stations: () => STATIONS,
-    registerConfigured: () => REGISTER_CONFIGURED
+    // Configured, or found: a box with a printer plugged in and nothing in .env is set up.
+    registerConfigured: () => REGISTER_CONFIGURED || defaultPrinterStatus().mode !== 'none',
+    defaultPrinterStatus,
+    defaultTransport
 };
 // ---------- production tickets ----------
 
@@ -893,11 +976,7 @@ function printTicket(ticket) {
         codepage: target.codepage
     });
     const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
-
-    if (PRINTER_CMD || PRINTER_DEVICE) {
-        return PRINTER_CMD ? printViaCommand(rawBuffer) : printViaDevice(rawBuffer);
-    }
-    return printViaTcp(rawBuffer, target);
+    return send(rawBuffer, target, ticket.station);
 }
 
 module.exports.printTicket = printTicket;
@@ -1074,23 +1153,26 @@ function testPageBuffer(target, mode, address) {
     return { info: { ...info, bytes: buffer.length }, buffer };
 }
 
-function printTestPage(station) {
+async function printTestPage(station) {
     const target = resolveStation(station);
 
-    const mode = PRINTER_CMD ? 'cmd' : PRINTER_DEVICE ? 'usb' : 'tcp';
-    const address = PRINTER_CMD
-        ? PRINTER_CMD
-        : PRINTER_DEVICE
-            ? PRINTER_DEVICE
-            : `${target.host}:${target.port}`;
+    // The page states where it was sent, so it is worked out first — for the register printer that
+    // may mean finding it.
+    let mode;
+    let address;
+    if (target.name !== 'default' && !PRINTER_CMD && !PRINTER_DEVICE) {
+        mode = 'tcp';
+        address = `${target.host}:${target.port}`;
+    } else {
+        const t = await defaultTransport();
+        mode = t.mode;
+        address = t.mode === 'cmd' ? PRINTER_CMD : t.mode === 'usb' ? t.device : `${t.host}:${t.port}`;
+        if (t.auto) address += ' (found)';
+    }
 
     const { info, buffer } = testPageBuffer(target, mode, address);
-
-    const sent = (PRINTER_CMD || PRINTER_DEVICE)
-        ? (PRINTER_CMD ? printViaCommand(buffer) : printViaDevice(buffer))
-        : printViaTcp(buffer, target);
-
-    return sent.then(() => info);
+    await send(buffer, target, station);
+    return info;
 }
 
 module.exports.printTestPage = printTestPage;
