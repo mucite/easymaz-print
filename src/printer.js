@@ -421,8 +421,8 @@ function buildEscposData(receipt, opts = {}) {
     if (receipt.paymentStatus)
         lines.push(`Status: ${receipt.paymentStatus}\n`);
 
-    // Art 4(3)(c): the IRN, the RRN and the QR the Authority issued for this sale — or, when it has
-    // issued none yet, the fact that it has not. See fiscalLines.
+    // Art 4(3)(c): the IRN, the RRN and the QR the Authority issued for this sale — or, once the
+    // directive is in force and it has issued none, the fact that it has not. See fiscalLines.
     fiscalLines(receipt, centerLines, formatInfoLine).forEach(l => lines.push(l));
 
     // Art 22(5)(c): a reprint says so at both ends, so neither half of a torn slip passes for the
@@ -715,6 +715,21 @@ function fiscallyRegistered(receipt) {
 }
 
 /**
+ * Whether this slip has to declare itself not fiscal.
+ *
+ * Only once Directive 1142/2026 has commenced, which the till learns from the API and sends as
+ * directiveInForce. Before then no restaurant can register a sale and none is required to, so a slip
+ * without an IRN is the receipt the current rules ask for, and a notice saying it is "not
+ * registered" is noise on every receipt in the country. Strictly true: a payload without the flag
+ * comes from a till that does not know, and today that means the directive is not in force.
+ */
+function mustDeclareNotFiscal(receipt) {
+    return receipt.directiveInForce === true
+        && !fiscallyRegistered(receipt)
+        && !awaitingRegistration(receipt);
+}
+
+/**
  * The "NOT A FISCAL RECEIPT" notice, bold and centred.
  *
  * Printed at the top, under the business header, and again where the IRN would have been. Never
@@ -742,7 +757,8 @@ function notFiscalLines(centerLines) {
  *   BILL - NOT A RECEIPT   isPaid === false — a bill presented before payment is not a receipt of
  *                          anything. Strictly false, not falsy: a payload that omits the flag is an
  *                          older client, and the payment line below already says UNPAID when it is.
- *   NOT A FISCAL RECEIPT   no IRN and not on its way to one — see fiscallyRegistered.
+ *   NOT A FISCAL RECEIPT   once the directive is in force, no IRN and not on its way to one — see
+ *                          mustDeclareNotFiscal.
  *
  * One banner block rather than three separate ones: the bill title first, since it is the larger
  * claim, and the fiscal notice under it. The caller leaves the printer in whatever alignment it
@@ -765,7 +781,7 @@ function statusBanners(receipt, centerLines, opts = {}) {
 
     if (receipt.isReceiptPrinted === true) bold('DUPLICATE');
     if (bill && receipt.isPaid === false) bold('BILL - NOT A RECEIPT');
-    if (fiscal && !fiscallyRegistered(receipt) && !awaitingRegistration(receipt)) {
+    if (fiscal && mustDeclareNotFiscal(receipt)) {
         notFiscalLines(centerLines).forEach(l => out.push(l));
     }
 
@@ -780,17 +796,18 @@ function statusBanners(receipt, centerLines, opts = {}) {
  * this, a receipt printed the taxpayer's four identifiers and said nothing whatever about the
  * registration that is supposed to make it a fiscal document.
  *
- * Three cases, and exactly one of them prints:
+ * Three cases, and at most one of them prints:
  *
  *   IRN issued          the IRN, the RRN and the Authority's QR.
  *   on its way          OFFLINE_QUEUED, PENDING or SUBMITTED. Art 4(4) allows a sale to be taken
  *                       offline and transmitted when the connection returns, so the paper
  *                       legitimately exists before its registration does — but it must not imply
  *                       it is registered, so it says it is awaiting registration.
- *   anything else       NOT A FISCAL RECEIPT. This used to be silence for NOT_REQUIRED and for an
- *                       absent state, which is every slip printed today: Art 4(1)(c) says a receipt
- *                       is issued "only upon ... obtaining an IRN, RRN and QR code", so a slip
- *                       without one has to say what it is rather than leave the reader to assume.
+ *   anything else       nothing before the directive commences: the slip is an ordinary receipt
+ *                       under the rules that apply today. Once it is in force, NOT A FISCAL
+ *                       RECEIPT — Art 4(1)(c) says a receipt is issued "only upon ... obtaining an
+ *                       IRN, RRN and QR code", so a slip without one has to say what it is rather
+ *                       than leave the reader to assume. See mustDeclareNotFiscal.
  *
  * The Authority's QR is printed only with an IRN. The three are issued together, and a Revenue
  * Authority code under a "not registered" notice would be the one thing on the slip that
@@ -816,7 +833,7 @@ function fiscalLines(receipt, centerLines, formatInfoLine) {
         out.push(ESC + 'a' + '\x01');
         centerLines('Awaiting fiscal registration').forEach(l => out.push(l));
         out.push(ESC + 'a' + '\x00');
-    } else {
+    } else if (mustDeclareNotFiscal(receipt)) {
         out.push('\n');
         notFiscalLines(centerLines).forEach(l => out.push(l));
         out.push(ESC + 'a' + '\x00');

@@ -408,10 +408,9 @@ test('a sale awaiting transmission says so instead of implying it is registered'
 });
 
 test('a sale from before the regime does not claim to be awaiting registration', () => {
-  // It used to say nothing at all, which left it looking registered. It now says it is not a fiscal
-  // receipt — see the notices below.
+  // Once the directive is in force it says it is not a fiscal receipt — see the notices below.
   const { buildEscposData } = freshPrinter();
-  const out = buildEscposData(fiscalReceipt({ fiscalState: 'NOT_REQUIRED' })).join('');
+  const out = buildEscposData(fiscalReceipt({ fiscalState: 'NOT_REQUIRED', directiveInForce: true })).join('');
   assert.ok(!/Awaiting fiscal registration/.test(out));
   assert.ok(!out.includes('\x1D(k'));
   assert.match(out, /NOT A FISCAL RECEIPT/);
@@ -482,10 +481,32 @@ for (const state of ['OFFLINE_QUEUED', 'SUBMITTED', 'submitted']) {
   });
 }
 
-for (const state of [undefined, 'PENDING', 'pending', 'NOT_REQUIRED', 'REJECTED', 'CANCELLED', 'SOMETHING_NEW']) {
-  test(`a sale with no IRN in state ${state} is marked not fiscal, top and bottom`, () => {
+for (const directiveInForce of [undefined, false]) {
+  test(`before the directive commences (directiveInForce ${directiveInForce}) a slip without an IRN is an ordinary receipt`, () => {
     const { buildEscposData } = freshPrinter();
-    const lines = buildEscposData(fiscalReceipt({ fiscalState: state }));
+    const out = buildEscposData(fiscalReceipt({ fiscalState: 'PENDING', directiveInForce, isPaid: false, isReceiptPrinted: true })).join('');
+    assert.ok(!out.includes(NOT_FISCAL));
+    assert.ok(!out.includes('Not registered with the Revenue Authority'));
+    // What the slip is still says so: those rules do not wait for the directive.
+    assert.strictEqual(count(out, 'DUPLICATE'), 2);
+    assert.strictEqual(count(out, 'BILL - NOT A RECEIPT'), 1);
+  });
+}
+
+test('before the directive commences a registered sale still prints its IRN, RRN and QR', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({
+    irn: 'IRN-99', rrn: 'RRN-77', fiscalQr: 'https://esr.mor.gov.et/v/ABC123'
+  })).join('');
+  assert.match(out, /IRN-99/);
+  assert.match(out, /RRN-77/);
+  assert.ok(out.includes('1P0https://esr.mor.gov.et/v/ABC123'));
+});
+
+for (const state of [undefined, 'PENDING', 'pending', 'NOT_REQUIRED', 'REJECTED', 'CANCELLED', 'SOMETHING_NEW']) {
+  test(`once the directive is in force, a sale with no IRN in state ${state} is marked not fiscal, top and bottom`, () => {
+    const { buildEscposData } = freshPrinter();
+    const lines = buildEscposData(fiscalReceipt({ fiscalState: state, directiveInForce: true }));
     const out = lines.join('');
 
     assert.strictEqual(count(out, NOT_FISCAL), 2, 'once at the top, once at the bottom');
@@ -508,14 +529,14 @@ for (const state of [undefined, 'PENDING', 'pending', 'NOT_REQUIRED', 'REJECTED'
 
 test('an Authority QR without an IRN is not printed under a not-fiscal notice', () => {
   const { buildEscposData } = freshPrinter();
-  const out = buildEscposData(fiscalReceipt({ fiscalQr: 'https://esr.mor.gov.et/v/ABC123' })).join('');
+  const out = buildEscposData(fiscalReceipt({ fiscalQr: 'https://esr.mor.gov.et/v/ABC123', directiveInForce: true })).join('');
   assert.ok(out.includes(NOT_FISCAL));
   assert.ok(!out.includes('\x1D(k'), 'no Authority QR');
 });
 
 test('the notices fit on 58 mm paper', () => {
   const { buildEscposData } = freshPrinter();
-  const out = buildEscposData(fiscalReceipt({ isPaid: false, isReceiptPrinted: true }), { lineWidth: 32 }).join('');
+  const out = buildEscposData(fiscalReceipt({ isPaid: false, isReceiptPrinted: true, directiveInForce: true }), { lineWidth: 32 }).join('');
   for (const text of ['NOT A FISCAL RECEIPT', 'BILL - NOT A RECEIPT', 'DUPLICATE']) {
     assert.ok(out.includes(text), text);
   }
@@ -526,7 +547,7 @@ test('the notices fit on 58 mm paper', () => {
 
 test('an unpaid bill is titled as a bill, with the fiscal notice under it', () => {
   const { buildEscposData } = freshPrinter();
-  const out = buildEscposData(fiscalReceipt({ isPaid: false })).join('');
+  const out = buildEscposData(fiscalReceipt({ isPaid: false, directiveInForce: true })).join('');
   assert.strictEqual(count(out, 'BILL - NOT A RECEIPT'), 1, 'one title, at the top');
   const bill = out.indexOf('BILL - NOT A RECEIPT');
   assert.ok(out.indexOf('ZING COFFEE') < bill);
@@ -609,7 +630,7 @@ const REGISTERED = {
 for (const paymentStatus of ['UNPAID', 'INITIATED', 'FAILED', 'CANCELLED', 'REJECTED', 'pending']) {
   test(`a bill whose payment is ${paymentStatus} prints no IRN, RRN, fiscal QR or receipt code`, () => {
     const { buildEscposData } = freshPrinter();
-    const out = buildEscposData(fiscalReceipt({ ...REGISTERED, paymentStatus, isPaid: true })).join('');
+    const out = buildEscposData(fiscalReceipt({ ...REGISTERED, paymentStatus, isPaid: true, directiveInForce: true })).join('');
     assert.ok(!out.includes('IRN-1'), 'no IRN');
     assert.ok(!out.includes('RRN-1'), 'no RRN');
     // Not /Revenue Authority/: the not-fiscal notice names the Authority too.
