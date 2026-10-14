@@ -219,7 +219,11 @@ function buildEscposData(receipt, opts = {}) {
     const CODE_PAGE  = codePageByte(opts.codepage);
 
     const lines = [];
-    const fmt = (v) => Number(v || 0).toFixed(2);
+    // 150, not 150.00; santim that are there print to two places. Same rule as the admin's slip.
+    const fmt = (v) => {
+        const n = Math.round(Number(v || 0) * 100) / 100;
+        return Number.isInteger(n) ? String(n) : n.toFixed(2);
+    };
     const repeat = (ch, n) => ch.repeat(Math.max(0, n));
 
     const wrapText = (text) => {
