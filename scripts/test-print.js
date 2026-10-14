@@ -74,8 +74,8 @@ async function sendUsb(buffer) {
         ({ usb } = require('usb'));
     } catch {
         throw new Error(
-            "USB support needs the 'usb' package, which is a dev dependency: run `npm install` " +
-            '(not `npm ci --omit=dev`) and try again. A network printer needs none of this.'
+            "USB support needs the 'usb' package, an optional dependency: run `npm install` " +
+            '(not with `--omit=optional`) and try again. A network printer needs none of this.'
         );
     }
 

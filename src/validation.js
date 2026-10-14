@@ -114,7 +114,6 @@ const PrintPayloadSchema = z.object({
     restaurantId: z.string().min(1, 'Restaurant ID is required'),
 
     paymentStatus: optionalText,
-    isReadOnlyMode: optionalFlag,
     jobId: optionalText,
 
     // Art 4(3)(c): what the Authority returns when it registers a sale. All optional, because there
