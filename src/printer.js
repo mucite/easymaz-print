@@ -303,30 +303,18 @@ function buildEscposData(receipt, opts = {}) {
         return l + " ".repeat(spaces) + r + "\n";
     };
 
-    // ---------- TOTAL CALCULATIONS ----------
+    // ---------- TOTALS ----------
+    // As the admin worked them out (dinerFigures): menu prices include VAT, so the items add up to
+    // the subtotal, the service charge is added with its VAT, and the VAT and the amount before it
+    // are printed under the total as included in it.
     const items = receipt.items || [];
-    const computedSubtotal = items.reduce(
-        (s, it) => s + (Number(it.quantity) * Number(it.price)),
-        0
-    );
-
-    const subtotal = receipt.subtotal ?? computedSubtotal;
-
     const svcPct = Number(receipt.serviceChargePercentage || 0);
     const vatPct = Number(receipt.vatPercentage || 0);
-
-    const serviceAmount = receipt.serviceCharge ?? (subtotal * svcPct / 100);
-    const vatAmount     = receipt.vat ?? (subtotal * vatPct / 100);
 
     // Two lines, not one. Rounding used to be added into the fee and printed as CONVENIENCE FEE, so
     // a cash slip could show a fee on the one method that has none. Each prints only when non-zero.
     const convenienceFee = Number(receipt.convenienceFee || 0);
     const rounding = Number(receipt.roundingDifference || 0);
-
-    const computedTotal =
-        subtotal + serviceAmount + vatAmount + convenienceFee + rounding;
-
-    const total = receipt.total ?? computedTotal;
 
     // ---------- PRINT START ----------
     lines.push(ESC + "@");          // initialize printer
@@ -387,16 +375,11 @@ function buildEscposData(receipt, opts = {}) {
 
     lines.push(repeat("-", LINE_WIDTH) + "\n");
 
-    lines.push(formatTotalLine("SUBTOTAL", subtotal));
+    lines.push(formatTotalLine("SUBTOTAL", receipt.subtotal));
 
-    if (serviceAmount) {
+    if (receipt.serviceCharge) {
         const lbl = svcPct ? `SERVICE ${svcPct}%` : "SERVICE";
-        lines.push(formatTotalLine(lbl, serviceAmount));
-    }
-
-    if (vatAmount) {
-        const lbl = vatPct ? `TAX ${vatPct}%` : "TAX";
-        lines.push(formatTotalLine(lbl, vatAmount));
+        lines.push(formatTotalLine(lbl, receipt.serviceCharge));
     }
 
     if (convenienceFee) {
@@ -410,8 +393,14 @@ function buildEscposData(receipt, opts = {}) {
     lines.push(repeat("-", LINE_WIDTH) + "\n");
 
     lines.push(ESC + 'E' + '\x01');
-    lines.push(formatTotalLine("TOTAL", total));
+    lines.push(formatTotalLine("TOTAL", receipt.total));
     lines.push(ESC + 'E' + '\x00');
+
+    // Included in the total, not added to it.
+    if (receipt.vat) {
+        lines.push(formatTotalLine("BEFORE VAT", receipt.taxableAmount));
+        lines.push(formatTotalLine(vatPct ? `VAT ${vatPct}% INCL` : "VAT INCL", receipt.vat));
+    }
 
     lines.push("\n");
 
@@ -420,7 +409,7 @@ function buildEscposData(receipt, opts = {}) {
     // change; a mobile-money one names the wallet, never the gateway ("CHAPA" meant nothing to a
     // diner). The raw status line that used to follow ("Status: PAID") said the same thing in the
     // payment engine's words and is gone.
-    paymentLines(receipt, total).forEach(l => lines.push(formatTotalLine(l[0], l[1])));
+    paymentLines(receipt, receipt.total).forEach(l => lines.push(formatTotalLine(l[0], l[1])));
 
     lines.push("\n");
 

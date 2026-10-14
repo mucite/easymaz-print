@@ -207,6 +207,7 @@ const CASH_SALE = {
   subtotal: 365.0,
   serviceCharge: 36.5,
   serviceChargePercentage: 10,
+  taxableAmount: 0,
   vat: 0,
   vatPercentage: 0,
   convenienceFee: 0,
@@ -711,4 +712,29 @@ test('mobile money names the wallet, never the gateway', () => {
   assert.match(out, /MOBILE MONEY TELEBIRR/);
   assert.doesNotMatch(out, /CHAPA/);
   assert.doesNotMatch(out, /Status:/);
+});
+
+test('menu prices include VAT: it prints under the total, as included, never added', () => {
+  const { buildEscposData } = freshPrinter();
+  // 365 at menu prices and 10% service: 349.13 food and service before VAT, 52.37 VAT inside.
+  const registered = {
+    ...CASH_SALE,
+    vatRegistrationNumber: 'VAT-0001',
+    taxableAmount: 349.13,
+    vat: 52.37,
+    vatPercentage: 15
+  };
+
+  const out = buildEscposData(registered, {}).join('');
+
+  assert.ok(out.includes('BEFORE VAT'), 'the amount before VAT is shown');
+  assert.ok(out.includes('VAT 15% INCL'), 'the VAT is shown as included');
+  assert.ok(!out.includes('TAX 15%'), 'no VAT line that adds to the total');
+  assert.ok(out.indexOf('TOTAL') < out.indexOf('VAT 15% INCL'), 'under the total, not above it');
+});
+
+test('a restaurant that is not VAT registered prints no VAT at all', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(CASH_SALE, {}).join('');
+  assert.ok(!out.includes('VAT'), 'nothing about VAT');
 });

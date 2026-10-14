@@ -85,6 +85,7 @@ const PrintPayloadSchema = z.object({
 
     subtotal: z.number().nonnegative('Subtotal must be >= 0'),
     serviceCharge: z.number().nonnegative('Service charge must be >= 0'),
+    taxableAmount: z.number().nonnegative('Amount before VAT must be >= 0'),
     vat: z.number().nonnegative('VAT must be >= 0'),
     vatPercentage: z.number().nonnegative('VAT percentage must be >= 0'),
 

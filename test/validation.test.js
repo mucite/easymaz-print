@@ -22,6 +22,7 @@ const lawful = () => ({
   items: [{ name: 'Macchiato', quantity: 1, price: 60 }],
   subtotal: 60,
   serviceCharge: 0,
+  taxableAmount: 0,
   vat: 9,
   vatPercentage: 15,
   total: 69,

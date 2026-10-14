@@ -205,6 +205,7 @@ const RECEIPT = {
   items: [{ name: 'Tibs', quantity: 1, price: 260 }],
   subtotal: 260,
   serviceCharge: 0,
+  taxableAmount: 0,
   vat: 39,
   vatPercentage: 15,
   total: 299
