@@ -905,6 +905,8 @@ const WALLET_NAMES = {
     cbebirr: "CBE BIRR",
     awashbirr: "AWASH BIRR",
     yaya: "YAYA",
+    ebirr: "COOPAY-EBIRR",
+    // What tills sent before Chapa's type, ebirr, was used; older payments still carry it.
     "coopay-ebirr": "COOPAY-EBIRR",
 };
 
