@@ -152,7 +152,20 @@ function defaultStation() {
     };
 }
 
-function resolveStation(station) {
+function resolveStation(station, target) {
+    if (target) {
+        // An address sent with the job, from the list the owner saved on the box. It wins over
+        // PRINTERS, which stays as the fallback for boxes set up before that list existed.
+        return {
+            host: target.host,
+            port: target.port,
+            width: target.width || DEFAULT_WIDTH,
+            cut: target.cut || DEFAULT_CUT,
+            codepage: DEFAULT_CODE_PAGE,
+            name: station ? String(station).toLowerCase() : 'station',
+            explicit: true
+        };
+    }
     if (!station) {
         return defaultStation();
     }
@@ -583,6 +596,10 @@ async function defaultTransport() {
  */
 async function send(rawBuffer, target, station) {
     const named = target.name !== 'default';
+    if (target.explicit) {
+        // A saved address is a network printer by definition, whatever the register printer is.
+        return printViaTcp(rawBuffer, target);
+    }
     if (named) {
         if (PRINTER_CMD || PRINTER_DEVICE) {
             // Unchanged: with a single command or device configured, a station cannot mean anything.
@@ -1004,8 +1021,8 @@ function buildTicketData(ticket, opts = {}) {
  * Routed the same way a receipt is, so an unknown station still lands at the default printer
  * rather than nowhere.
  */
-function printTicket(ticket) {
-    const target = resolveStation(ticket.station);
+function printTicket(ticket, address) {
+    const target = resolveStation(ticket.station, address);
     const data = buildTicketData(ticket, {
         lineWidth: target.width,
         cut: target.cut,
@@ -1189,14 +1206,14 @@ function testPageBuffer(target, mode, address) {
     return { info: { ...info, bytes: buffer.length }, buffer };
 }
 
-async function printTestPage(station) {
-    const target = resolveStation(station);
+async function printTestPage(station, saved) {
+    const target = resolveStation(station, saved);
 
     // The page states where it was sent, so it is worked out first — for the register printer that
     // may mean finding it.
     let mode;
     let address;
-    if (target.name !== 'default' && !PRINTER_CMD && !PRINTER_DEVICE) {
+    if (target.explicit || (target.name !== 'default' && !PRINTER_CMD && !PRINTER_DEVICE)) {
         mode = 'tcp';
         address = `${target.host}:${target.port}`;
     } else {

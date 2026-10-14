@@ -3,7 +3,7 @@ const express = require('express');
 const http    = require('http');
 const { printReceipt, printTicket, printTestPage, stations, registerConfigured, defaultPrinterStatus } = require('./printer');
 const { networkPrinter } = require('./discovery');
-const { PrintPayloadSchema, TicketPayloadSchema } = require('./validation');
+const { PrintPayloadSchema, TicketPayloadSchema, TestPrintSchema } = require('./validation');
 
 const app  = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -134,7 +134,7 @@ app.post('/ticket', async (req, res) => {
     return res.status(400).json({ success: false, errors });
   }
 
-  const { jobId, ...ticket } = parsed.data;
+  const { jobId, target, ...ticket } = parsed.data;
 
   // Same dedup as receipts. A till retrying a request must not put a second copy of the same food
   // on the pass — the kitchen would cook it.
@@ -144,7 +144,7 @@ app.post('/ticket', async (req, res) => {
   }
 
   try {
-    await printTicket(ticket);
+    await printTicket(ticket, target);
     markPrinted(jobId);
     return res.json({ success: true, station: ticket.station || 'default' });
   } catch (err) {
@@ -190,16 +190,28 @@ app.post('/print', async (req, res) => {
  * prints as a receipt.
  *
  * So this route takes nothing. An optional station names which printer to test on a site with
- * several; absent, it is the register's, which is the whole configuration for most sites.
+ * several; absent, it is the register's, which is the whole configuration for most sites. An
+ * optional target is that station's address as saved on the box, and wins over PRINTERS.
  *
  * Not deduplicated, deliberately. The jobId window exists so a till's retry does not cook the food
  * twice; somebody testing a printer presses this repeatedly and means it every time.
  */
 app.post('/test-print', async (req, res) => {
-  const station = (req.body && req.body.station) || req.query.station;
+  const parsed = TestPrintSchema.safeParse({
+    station: (req.body && req.body.station) || req.query.station,
+    target: req.body && req.body.target
+  });
+  if (!parsed.success) {
+    const errors = parsed.error.issues.map(issue => {
+      const path = issue.path.join('.');
+      return path ? `${path}: ${issue.message}` : issue.message;
+    });
+    return res.status(400).json({ success: false, errors });
+  }
+  const { station, target } = parsed.data;
 
   try {
-    const info = await printTestPage(station);
+    const info = await printTestPage(station, target);
     console.log(`[test-print] sent ${info.bytes} bytes to ${info.target} (${info.station})`);
     return res.json({ success: true, ...info });
   } catch (err) {

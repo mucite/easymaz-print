@@ -148,9 +148,27 @@ const TicketItemSchema = z.object({
     note: optionalText
 });
 
+/**
+ * Where a station's printer is, as the owner saved it in the admin.
+ *
+ * Sent with each job so the box's saved list decides where paper comes out, without anyone editing
+ * PRINTERS in the box's .env. A host is an IPv4 address or a hostname — never a URL or a path.
+ */
+const HOST = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}|(?![\d.]+$)(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)$/;
+
+const TargetSchema = z.object({
+    host: z.string().trim().regex(HOST, 'host must be an IPv4 address or a hostname'),
+    port: z.number().int().min(1).max(65535),
+    width: z.number().int().min(20).max(96).optional(),
+    cut: z.enum(['full', 'partial']).optional()
+});
+
 const TicketPayloadSchema = z.object({
     jobId: z.string().min(1, 'jobId is required'),
     station: optionalText,
+    // The station's printer, from the list saved on the box. Absent: PRINTERS in .env, then the
+    // register printer.
+    target: TargetSchema.nullish(),
     orderNumber: z.string().min(1, 'Order number is required'),
     table: z.number().nullable().optional(),
     time: optionalText,
@@ -161,7 +179,15 @@ const TicketPayloadSchema = z.object({
     items: z.array(TicketItemSchema).min(1, 'A ticket with no items is not worth printing')
 });
 
+/** A test slip: which station, and optionally where its printer is. Both may be absent. */
+const TestPrintSchema = z.object({
+    station: optionalText,
+    target: TargetSchema.nullish()
+});
+
 module.exports = {
     PrintPayloadSchema,
-    TicketPayloadSchema
+    TicketPayloadSchema,
+    TestPrintSchema,
+    TargetSchema
 };

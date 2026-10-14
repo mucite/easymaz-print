@@ -125,3 +125,16 @@ test('a receipt without an invoice number is accepted', () => {
   const result = PrintPayloadSchema.safeParse(rest);
   assert.ok(result.success, JSON.stringify(result.error?.issues));
 });
+
+test('a saved printer address is an IPv4 address or a hostname, on a real port', () => {
+  const { TargetSchema } = require('../src/validation');
+  for (const host of ['192.168.1.50', 'kitchen-printer', 'bar.local']) {
+    assert.ok(TargetSchema.safeParse({ host, port: 9100 }).success, host);
+  }
+  for (const host of ['999.1.1.1', '192.168.1', 'http://x', 'a b', '']) {
+    assert.ok(!TargetSchema.safeParse({ host, port: 9100 }).success, host);
+  }
+  assert.ok(!TargetSchema.safeParse({ host: '10.0.0.5', port: 0 }).success);
+  assert.ok(!TargetSchema.safeParse({ host: '10.0.0.5', port: 65536 }).success);
+  assert.ok(!TargetSchema.safeParse({ host: '10.0.0.5', port: 9100, cut: 'half' }).success);
+});

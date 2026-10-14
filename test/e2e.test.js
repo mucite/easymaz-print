@@ -726,3 +726,81 @@ describe('the test slip', () => {
     assert.equal(res.status, 401);
   });
 });
+
+describe('stations saved in the admin, sent with each job', () => {
+  let register, saved, envKitchen, bridge;
+
+  before(async () => {
+    [register, saved, envKitchen] = await Promise.all([fakePrinter(), fakePrinter(), fakePrinter()]);
+    bridge = await startBridge({
+      PRINT_SHARED_SECRET: KEY,
+      PRINTER_HOST: '127.0.0.1',
+      PRINTER_PORT: String(register.port),
+      // A box set up before the admin screen: its .env still names a kitchen printer.
+      PRINTERS: `kitchen=127.0.0.1:${envKitchen.port}`
+    });
+  });
+
+  after(async () => {
+    await bridge.stop();
+    await Promise.all([register.close(), saved.close(), envKitchen.close()]);
+  });
+
+  test('a ticket with a target prints at that address', async () => {
+    const res = await bridge.post('/ticket', {
+      ...ticket('bar', 'saved-bar', [{ name: 'Tej', quantity: 1 }]),
+      target: { host: '127.0.0.1', port: saved.port }
+    });
+
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(saved), 'the saved address was never handed the ticket');
+    assert.match(paper(saved), /Tej/);
+    assert.ok(await stayedEmpty(register), 'the register printed a ticket meant for the bar');
+  });
+
+  test('the saved address wins over PRINTERS in .env', async () => {
+    saved.reset();
+    await bridge.post('/ticket', {
+      ...ticket('kitchen', 'saved-kitchen', [{ name: 'Tibs', quantity: 1 }]),
+      target: { host: '127.0.0.1', port: saved.port, width: 32 }
+    });
+
+    assert.ok(await settled(saved));
+    // The rule under the header is drawn at the paper's width: 32 dashes on 58 mm, never 48.
+    assert.match(paper(saved), /(^|[^-])-{32}(?!-)/, 'the saved width was not used');
+    assert.ok(await stayedEmpty(envKitchen), 'PRINTERS won over the saved address');
+  });
+
+  test('with no target, PRINTERS still routes the ticket', async () => {
+    await bridge.post('/ticket', ticket('kitchen', 'env-kitchen', [{ name: 'Shiro', quantity: 1 }]));
+    assert.ok(await settled(envKitchen), 'PRINTERS stopped working as a fallback');
+    assert.match(paper(envKitchen), /Shiro/);
+  });
+
+  test('a test slip goes to the address it is given', async () => {
+    saved.reset();
+    const res = await bridge.post('/test-print', {
+      station: 'bar',
+      target: { host: '127.0.0.1', port: saved.port }
+    });
+
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.station, 'bar');
+    assert.equal(res.body.target, `127.0.0.1:${saved.port}`);
+    assert.ok(await settled(saved));
+    assert.match(paper(saved), /TEST PRINT/);
+  });
+
+  test('a target that is not an address is refused by name', async () => {
+    const bad = await bridge.post('/ticket', {
+      ...ticket('bar', 'bad-target', [{ name: 'Tej', quantity: 1 }]),
+      target: { host: 'http://evil', port: 70000 }
+    });
+    assert.equal(bad.status, 400);
+    assert.match(JSON.stringify(bad.body), /target\.host/);
+    assert.match(JSON.stringify(bad.body), /target\.port/);
+
+    const badTest = await bridge.post('/test-print', { target: { host: '10.0.0.5', port: 0 } });
+    assert.equal(badTest.status, 400);
+  });
+});
