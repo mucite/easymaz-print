@@ -91,7 +91,6 @@ const PrintPayloadSchema = z.object({
 
     serviceChargePercentage: z.number().nonnegative().optional(),
     convenienceFee: z.number().nonnegative().optional(),
-    roundingDifference: z.number().optional(),
 
     total: z.number().nonnegative('Total must be >= 0'),
 

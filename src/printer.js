@@ -311,10 +311,8 @@ function buildEscposData(receipt, opts = {}) {
     const svcPct = Number(receipt.serviceChargePercentage || 0);
     const vatPct = Number(receipt.vatPercentage || 0);
 
-    // Two lines, not one. Rounding used to be added into the fee and printed as CONVENIENCE FEE, so
-    // a cash slip could show a fee on the one method that has none. Each prints only when non-zero.
+    // Mobile money only; prints only when non-zero.
     const convenienceFee = Number(receipt.convenienceFee || 0);
-    const rounding = Number(receipt.roundingDifference || 0);
 
     // ---------- PRINT START ----------
     lines.push(ESC + "@");          // initialize printer
@@ -384,10 +382,6 @@ function buildEscposData(receipt, opts = {}) {
 
     if (convenienceFee) {
         lines.push(formatTotalLine("CONVENIENCE FEE", convenienceFee));
-    }
-
-    if (rounding) {
-        lines.push(formatTotalLine("ROUNDING", rounding));
     }
 
     lines.push(repeat("-", LINE_WIDTH) + "\n");

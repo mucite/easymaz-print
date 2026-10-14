@@ -667,23 +667,22 @@ test('stripping the codes leaves the payload it was given alone', () => {
 });
 
 
-test('rounding prints as ROUNDING, apart from the convenience fee', () => {
+test('the convenience fee prints on its own line, and no ROUNDING line', () => {
   const { buildEscposData } = freshPrinter();
   const out = buildEscposData(
-    { ...CASH_SALE, paidByCash: false, paymentMethod: 'CHAPA', convenienceFee: 4.03, roundingDifference: 0.97 },
+    { ...CASH_SALE, paidByCash: false, paymentMethod: 'CHAPA', convenienceFee: 5, roundingDifference: 0.97 },
     {}
   ).join('');
 
-  assert.match(out, /CONVENIENCE FEE\s+4\.03/);
-  assert.match(out, /ROUNDING\s+0\.97/);
+  assert.match(out, /CONVENIENCE FEE\s+5\n/);
+  assert.doesNotMatch(out, /ROUNDING/);
 });
 
-test('a fee or rounding of zero prints no line at all', () => {
+test('a fee of zero prints no line at all', () => {
   const { buildEscposData } = freshPrinter();
-  const out = buildEscposData({ ...CASH_SALE, convenienceFee: 0, roundingDifference: 0 }, {}).join('');
+  const out = buildEscposData({ ...CASH_SALE, convenienceFee: 0 }, {}).join('');
 
   assert.doesNotMatch(out, /CONVENIENCE FEE/);
-  assert.doesNotMatch(out, /ROUNDING/);
 });
 
 test('an unpaid bill says what is owed and commits to no method', () => {
