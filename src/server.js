@@ -233,7 +233,7 @@ function logPrinterTarget() {
         .then(({ host, candidates, noLan }) => {
           if (host) console.log(`[easymaz-print] Printer TCP  ${host} (found)`);
           else if (noLan) console.warn('[easymaz-print] BOX_LAN_ADDRESS is unset, so the network is not searched — plug a USB printer in or set PRINTER_IP');
-          else if (candidates.length > 1) console.warn(`[easymaz-print] several printers answer (${candidates.join(', ')}) — set PRINTER_IP to the till's`);
+          else if (candidates.length > 1) console.warn(`[easymaz-print] several printers answer (${candidates.join(', ')}) — set PRINTER_IP to the sales register's`);
           else console.warn('[easymaz-print] no printer found yet — plug one in by USB or connect it to the network; each receipt looks again');
         })
         .catch(() => {});

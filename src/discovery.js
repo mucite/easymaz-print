@@ -115,7 +115,7 @@ async function networkPrinter({ port = 9100, lanAddress = LAN_ADDRESS, force = f
             .then(found => {
                 cache = { at: Date.now(), host: found.length === 1 ? found[0] : null, candidates: found };
                 if (found.length === 1) console.log(`[printer] found a network printer at ${found[0]}:${port}`);
-                else if (found.length > 1) console.warn(`[printer] several devices answer on port ${port}: ${found.join(', ')} — set PRINTER_IP to the till's`);
+                else if (found.length > 1) console.warn(`[printer] several devices answer on port ${port}: ${found.join(', ')} — set PRINTER_IP to the sales register's`);
                 return cache;
             })
             .finally(() => { inFlight = null; });

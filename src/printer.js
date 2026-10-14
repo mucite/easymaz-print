@@ -572,7 +572,7 @@ async function defaultTransport() {
     if (candidates && candidates.length > 1) {
         throw new Error(
             `Several printers answer on port ${PRINTER_PORT} (${candidates.join(', ')}). ` +
-            `Set PRINTER_IP to the till's one so a receipt cannot print in the kitchen.`
+            `Set PRINTER_IP to the sales register's one so a receipt cannot print in the kitchen.`
         );
     }
     throw new Error(
