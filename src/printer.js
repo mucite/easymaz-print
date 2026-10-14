@@ -314,12 +314,13 @@ function buildEscposData(receipt, opts = {}) {
     const serviceAmount = receipt.serviceCharge ?? (subtotal * svcPct / 100);
     const vatAmount     = receipt.vat ?? (subtotal * vatPct / 100);
 
-    const convenienceFee =
-        Number(receipt.convenienceFee || 0) +
-        Number(receipt.roundingDifference || 0);
+    // Two lines, not one. Rounding used to be added into the fee and printed as CONVENIENCE FEE, so
+    // a cash slip could show a fee on the one method that has none. Each prints only when non-zero.
+    const convenienceFee = Number(receipt.convenienceFee || 0);
+    const rounding = Number(receipt.roundingDifference || 0);
 
     const computedTotal =
-        subtotal + serviceAmount + vatAmount + convenienceFee;
+        subtotal + serviceAmount + vatAmount + convenienceFee + rounding;
 
     const total = receipt.total ?? computedTotal;
 
@@ -396,6 +397,10 @@ function buildEscposData(receipt, opts = {}) {
 
     if (convenienceFee) {
         lines.push(formatTotalLine("CONVENIENCE FEE", convenienceFee));
+    }
+
+    if (rounding) {
+        lines.push(formatTotalLine("ROUNDING", rounding));
     }
 
     lines.push(repeat("-", LINE_WIDTH) + "\n");

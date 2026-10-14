@@ -665,3 +665,22 @@ test('stripping the codes leaves the payload it was given alone', () => {
   assert.strictEqual(input.irn, 'IRN-1');
 });
 
+
+test('rounding prints as ROUNDING, apart from the convenience fee', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(
+    { ...CASH_SALE, paidByCash: false, paymentMethod: 'CHAPA', convenienceFee: 4.03, roundingDifference: 0.97 },
+    {}
+  ).join('');
+
+  assert.match(out, /CONVENIENCE FEE\s+4\.03/);
+  assert.match(out, /ROUNDING\s+0\.97/);
+});
+
+test('a fee or rounding of zero prints no line at all', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData({ ...CASH_SALE, convenienceFee: 0, roundingDifference: 0 }, {}).join('');
+
+  assert.doesNotMatch(out, /CONVENIENCE FEE/);
+  assert.doesNotMatch(out, /ROUNDING/);
+});
