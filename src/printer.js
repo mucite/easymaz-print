@@ -415,20 +415,14 @@ function buildEscposData(receipt, opts = {}) {
 
     lines.push("\n");
 
-    let paymentLabel = receipt.paidByCash
-        ? "CASH"
-        : receipt.paymentMethod || "";
+    // How it was paid, in words a diner knows. An unpaid bill commits to no method — the diner may
+    // still pay either way — and says what is owed. A cash receipt says what was handed over and the
+    // change; a mobile-money one names the wallet, never the gateway ("CHAPA" meant nothing to a
+    // diner). The raw status line that used to follow ("Status: PAID") said the same thing in the
+    // payment engine's words and is gone.
+    paymentLines(receipt, total).forEach(l => lines.push(formatTotalLine(l[0], l[1])));
 
-    if (paymentLabel) {
-        if (receipt.isPaid === false) {
-            lines.push(formatTotalLine(paymentLabel, "UNPAID"));
-        } else {
-            lines.push(formatTotalLine(paymentLabel, total));
-        }
-    }
-
-    if (receipt.paymentStatus)
-        lines.push(`Status: ${receipt.paymentStatus}\n`);
+    lines.push("\n");
 
     // Art 4(3)(c): the IRN, the RRN and the QR the Authority issued for this sale — or, once the
     // directive is in force and it has issued none, the fact that it has not. See fiscalLines.
@@ -903,6 +897,35 @@ function printReceipt(receipt, station) {
     const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
 
     return send(rawBuffer, target, station);
+}
+
+const WALLET_NAMES = {
+    telebirr: "TELEBIRR",
+    mpesa: "M-PESA",
+    cbebirr: "CBE BIRR",
+    awashbirr: "AWASH BIRR",
+    yaya: "YAYA",
+    "coopay-ebirr": "COOPAY-EBIRR",
+};
+
+/** [label, amount] pairs for the payment block. See the comment where it is printed. */
+function paymentLines(receipt, total) {
+    if (receipt.isPaid === false) {
+        return [["AMOUNT DUE", total]];
+    }
+    const method = String(receipt.paymentMethod || "").toUpperCase();
+    if (receipt.paidByCash || method === "CASH") {
+        const out = [["CASH", total]];
+        const tendered = Number(receipt.tenderedAmount);
+        if (Number.isFinite(tendered) && tendered > total) {
+            out.push(["CASH RECEIVED", tendered]);
+            out.push(["CHANGE", Math.round((tendered - total) * 100) / 100]);
+        }
+        return out;
+    }
+    if (!method) return [];
+    const wallet = WALLET_NAMES[String(receipt.paymentWallet || "").toLowerCase()];
+    return [[wallet ? `MOBILE MONEY ${wallet}` : "MOBILE MONEY", total]];
 }
 
 module.exports = {

@@ -684,3 +684,31 @@ test('a fee or rounding of zero prints no line at all', () => {
   assert.doesNotMatch(out, /CONVENIENCE FEE/);
   assert.doesNotMatch(out, /ROUNDING/);
 });
+
+test('an unpaid bill says what is owed and commits to no method', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData({ ...CASH_SALE, isPaid: false }, {}).join('');
+
+  assert.match(out, /AMOUNT DUE/);
+  assert.doesNotMatch(out, /UNPAID/);
+});
+
+test('a cash receipt shows the cash received and the change', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData({ ...CASH_SALE, isPaid: true, tenderedAmount: CASH_SALE.total + 50 }, {}).join('');
+
+  assert.match(out, /CASH RECEIVED/);
+  assert.match(out, /CHANGE\s+50/);
+});
+
+test('mobile money names the wallet, never the gateway', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(
+    { ...CASH_SALE, paidByCash: false, isPaid: true, paymentMethod: 'CHAPA', paymentWallet: 'telebirr' },
+    {}
+  ).join('');
+
+  assert.match(out, /MOBILE MONEY TELEBIRR/);
+  assert.doesNotMatch(out, /CHAPA/);
+  assert.doesNotMatch(out, /Status:/);
+});

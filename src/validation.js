@@ -107,6 +107,10 @@ const PrintPayloadSchema = z.object({
     // receipts. What a payment method may be is the API's question, and it answers it in
     // PaymentMethod.from.
     paymentMethod: optionalText,
+    // The cash handed over, for a change line; and the wallet a phone prompt went to, so the slip
+    // says "MOBILE MONEY TELEBIRR" rather than the gateway's name. Both optional, both only printed.
+    tenderedAmount: z.number().nonnegative().optional().nullable(),
+    paymentWallet: optionalText,
     restaurantId: z.string().min(1, 'Restaurant ID is required'),
 
     paymentStatus: optionalText,
