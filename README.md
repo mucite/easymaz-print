@@ -99,6 +99,7 @@ A wrap means the width is wrong.
 ------------------------------------------------
 Bold text
 Double
+ Inverted
                 Centred text
 Accents: cafe 25°C áéíóú
 ------------------------------------------------
@@ -119,7 +120,7 @@ this bridge produces.
 |---|---|
 | **Target** | Which printer this actually reached. |
 | **Ruler** | Whether the column width is right. The last digit must sit in the last column; a wrapped line means the paper is narrower than `PRINTER_WIDTH`. |
-| **Bold / Double / Centred** | `ESC E`, `GS !`, `ESC a`. |
+| **Bold / Double / Inverted / Centred** | `ESC E`, `GS !`, `GS B`, `ESC a`. Inverted is the black bar a kitchen ticket puts the station and REPRINT in. |
 | **Accents** | Whether `ESC t` selected the code page. A wrong table prints box-drawing characters or Greek. |
 | **QR** | Whether the printer has a hardware QR engine (`GS ( k`). Most likely thing to be missing, and it fails silently — a model without one prints a receipt that looks correct and lacks the code the law requires. |
 | **The cut** | `GS V`. Set `PRINTER_CUT=partial` for a printer that only does partial cuts. |
@@ -165,7 +166,7 @@ how you confirm it took.
 | `GET /health` | no | Reports the configured printer. Prints nothing. |
 | `POST /test-print` | yes | The slip above. Not deduplicated. |
 | `POST /print` | yes | A fiscal receipt: TIN, premises, items, VAT breakdown, total. |
-| `POST /ticket` | yes | A production ticket: order, table, items. No money on it. |
+| `POST /ticket` | yes | A production ticket: station, table, items with remarks, reprint and order note. No money on it. |
 
 The shared secret is the only thing between this bridge and anyone who can reach it. There is no
 TLS: it is built to listen on a private network, not to be exposed beyond one.

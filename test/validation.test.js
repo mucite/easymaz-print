@@ -210,3 +210,46 @@ test('a malformed credit note is refused, and the field named', () => {
   refused({ openDrawer: undefined }, 'openDrawer');
   refused({ reason: '  ' }, 'reason');
 });
+
+/**
+ * The kitchen ticket's payload, as the API sends it from KitchenTickets.ticket.
+ */
+const { TicketPayloadSchema } = require('../src/validation');
+
+const apiTicket = () => ({
+  jobId: 'ticket-o1-kitchen',
+  orderNumber: 'A-12',
+  table: 4,
+  time: '12:41',
+  waiter: 'Sara',
+  station: 'kitchen',
+  items: [{ name: 'Tibs', quantity: 1, note: 'no berbere' }, { name: 'Shiro', quantity: 2 }]
+});
+
+test('the ticket the API sends today is accepted as it is', () => {
+  const parsed = TicketPayloadSchema.safeParse(apiTicket());
+  assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+});
+
+test('a reprint and an order note are carried through', () => {
+  const parsed = TicketPayloadSchema.safeParse({ ...apiTicket(), reprint: true, note: 'Nut allergy' });
+  assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+  assert.strictEqual(parsed.data.reprint, true);
+  assert.strictEqual(parsed.data.note, 'Nut allergy');
+});
+
+test('an empty order note is no note', () => {
+  for (const note of [null, '', '   ']) {
+    const parsed = TicketPayloadSchema.safeParse({ ...apiTicket(), note });
+    assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+    assert.strictEqual(parsed.data.note, undefined);
+  }
+});
+
+test('a price sent with a ticket item is dropped, never printed', () => {
+  const ticket = apiTicket();
+  ticket.items[0].price = 260;
+  const parsed = TicketPayloadSchema.safeParse(ticket);
+  assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+  assert.ok(!('price' in parsed.data.items[0]));
+});

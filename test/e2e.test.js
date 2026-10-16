@@ -172,7 +172,7 @@ function paper(printer) {
     .replace(/\x1bp[\s\S]{3}/g, '')
     .replace(/\x1b@/g, '')
     .replace(/\x1b[taE][\s\S]/g, '')
-    .replace(/\x1d[V!][\s\S]/g, '')
+    .replace(/\x1d[V!B][\s\S]/g, '')
     .replace(/[\x00-\x09\x0b\x0c\x0e-\x1f]/g, '');
 }
 
@@ -275,6 +275,27 @@ describe('a box with a register printer and two stations', () => {
     assert.ok(await settled(register), 'a mistyped station printed nowhere at all');
     assert.match(paper(register), /Shiro/);
     assert.match(bridge.log(), /unknown station/);
+  });
+
+  test('a reprint with an order note reaches the bar on 58 mm paper', async () => {
+    bar.reset();
+    const res = await bridge.post('/ticket', {
+      ...ticket('bar', 'j-reprint', [
+        { name: 'Tej (honey wine), a full bottle for the whole table', quantity: 1, note: 'four glasses' }
+      ]),
+      reprint: true,
+      note: 'Birthday table: bring the bottle with the cake'
+    });
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(bar), 'the reprint never reached the bar');
+    const slip = paper(bar);
+    assert.match(slip, /REPRINT/);
+    assert.match(slip, /TABLE 7/);
+    assert.match(slip, /> four glasses/);
+    assert.match(slip, /\| NOTE: Birthday table/);
+    assert.match(slip, /\n1 item\n/);
+    assert.ok(widestLine(bar) <= 32, `bar wrapped at ${widestLine(bar)}, expected 32 or less`);
   });
 
   test('a retry does not put the same food on twice', async () => {

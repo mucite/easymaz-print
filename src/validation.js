@@ -176,6 +176,9 @@ const TicketPayloadSchema = z.object({
     // A second copy of a ticket the kitchen may already have. Printed as such, so nobody cooks the
     // order twice.
     reprint: z.boolean().optional(),
+    // A note for the whole order rather than one dish, printed boxed under the items. Nothing sends
+    // one yet: an order has no note of its own (its remark is the reason it was cancelled).
+    note: optionalText,
     items: z.array(TicketItemSchema).min(1, 'A ticket with no items is not worth printing')
 });
 

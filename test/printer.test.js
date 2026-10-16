@@ -109,28 +109,135 @@ test('an unknown station falls back to the default rather than refusing', () => 
  * large, what is present, and above all what is absent: a ticket carrying VAT and a TIN is a page
  * of tax arithmetic to read past before finding the food.
  */
-test('a ticket names its station and its table in double-height type', () => {
+
+/**
+ * The ticket as it lands on paper, one entry per printed line: its text, its width in columns
+ * (double-width characters take two), and whether it was double-size or white on black.
+ */
+function paperLines(out) {
+  const raw = out.join('');
+  const lines = [];
+  let wide = false, inv = false, text = '', cols = 0, anyWide = false, anyInv = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (c === '\x1B') { i += raw[i + 1] === '@' ? 1 : 2; continue; }
+    if (c === '\x1D') {
+      const n = raw.charCodeAt(i + 2);
+      if (raw[i + 1] === '!') wide = (n & 0x10) !== 0;
+      if (raw[i + 1] === 'B') inv = n === 1;
+      i += 2;
+      continue;
+    }
+    if (c === '\n') {
+      lines.push({ text, cols, wide: anyWide, inverted: anyInv });
+      text = ''; cols = 0; anyWide = false; anyInv = false;
+      continue;
+    }
+    text += c;
+    cols += wide ? 2 : 1;
+    anyWide = anyWide || wide;
+    anyInv = anyInv || inv;
+  }
+  return lines;
+}
+
+const LUNCH = {
+  station: 'kitchen',
+  orderNumber: 'A-0142',
+  table: 12,
+  time: '12:41',
+  waiter: 'Selam',
+  items: [
+    { name: 'Doro Wat', quantity: 2, note: 'one mild, one extra spicy' },
+    { name: 'Beyaynetu (fasting combination platter with misir, shiro, gomen and atakilt)', quantity: 1, note: 'no onion; extra injera on the side, please' },
+    { name: 'Tibs', quantity: 12 }
+  ]
+};
+
+for (const width of [48, 32]) {
+  test(`a ticket never runs past the paper at ${width} columns`, () => {
+    const { buildTicketData } = freshPrinter();
+    const out = buildTicketData(
+      { ...LUNCH, reprint: true, note: 'Guest has a nut allergy. Serve the fasting dishes first.' },
+      { lineWidth: width }
+    );
+    for (const l of paperLines(out)) {
+      assert.ok(l.cols <= width, `"${l.text}" is ${l.cols} columns on ${width}-column paper`);
+    }
+  });
+
+  test(`a long dish name wraps under itself, not under the quantity, at ${width} columns`, () => {
+    const { buildTicketData } = freshPrinter();
+    const lines = paperLines(buildTicketData(LUNCH, { lineWidth: width }));
+    // "12x" is the widest quantity: six columns double width, and one more before the names.
+    const first = lines.findIndex(l => l.text.includes('Beyaynetu'));
+    assert.ok(first > 0);
+    assert.match(lines[first].text, /^ 1x Beyaynetu/);
+    const next = lines[first + 1].text;
+    assert.ok(next.startsWith(' '.repeat(7)) && next[7] !== ' ', `continuation "${next}"`);
+    // Nothing of the name is lost to the wrap.
+    const name = lines.slice(first, first + 5).map(l => l.text.trim()).join(' ');
+    assert.match(name, /atakilt\)/);
+  });
+}
+
+test('the station is a white-on-black bar, and the table is double size', () => {
   const { buildTicketData } = freshPrinter('bar=192.168.1.51');
   const out = buildTicketData({
-    station: 'bar',
-    orderNumber: '002',
-    table: 7,
+    station: 'bar', orderNumber: '002', table: 7, time: '19:15', waiter: 'Sara',
     items: [{ name: 'Habesha Beer', quantity: 2 }]
-  }).join('');
+  });
+  const lines = paperLines(out);
 
-  assert.match(out, /BAR/);
-  assert.match(out, /TABLE 7/);
-  assert.match(out, /2 x Habesha Beer/);
-  // GS ! 0x11 is double width and height.
-  assert.ok(out.includes('\x1D!\x11'), 'expected double-size type');
+  const station = lines[0];
+  assert.strictEqual(station.text.trim(), 'BAR');
+  assert.ok(station.inverted && station.wide, 'the station is inverted double-size type');
+  assert.strictEqual(station.cols, 48, 'the bar runs the full width of the paper');
+
+  const table = lines.find(l => l.text === 'TABLE 7');
+  assert.ok(table && table.wide && !table.inverted, 'the table in double-size type');
+  assert.ok(out.join('').includes('\x1D!\x11TABLE 7'), 'GS ! 0x11 before the table');
+
+  const i = lines.indexOf(table);
+  assert.strictEqual(lines[i + 1].text, '#002   19:15', 'order number and time on one line');
+  assert.strictEqual(lines[i + 2].text, 'Waiter: Sara');
+  assert.ok(!lines[i + 2].wide, 'the waiter in ordinary type');
+
+  const dish = lines.find(l => l.text.includes('Habesha Beer'));
+  assert.strictEqual(dish.text, '2x Habesha Beer');
+  assert.ok(out.join('').includes('\x1BE\x01\x1D!\x112x\x1D!\x01 Habesha Beer'),
+    'the quantity bold double size, the name bold double height');
 });
 
-test('a reprinted ticket says so, and a first one does not', () => {
+test('a reprint says so in a black bar before the food, and a first print does not', () => {
   const { buildTicketData } = freshPrinter();
-  const ticket = { orderNumber: '4', items: [{ name: 'Tibs', quantity: 1 }] };
+  const ticket = { orderNumber: '4', table: 3, items: [{ name: 'Tibs', quantity: 1 }] };
 
-  assert.match(buildTicketData({ ...ticket, reprint: true }).join(''), /REPRINT/);
+  const lines = paperLines(buildTicketData({ ...ticket, reprint: true }));
+  const banner = lines.findIndex(l => l.text.trim() === 'REPRINT');
+  assert.ok(banner > 0, 'no REPRINT banner');
+  assert.ok(lines[banner].inverted && lines[banner].wide);
+  assert.ok(banner < lines.findIndex(l => l.text.includes('Tibs')), 'REPRINT comes before the food');
+
   assert.ok(!buildTicketData(ticket).join('').includes('REPRINT'));
+});
+
+test('a remark sits under its dish behind a marker, wrapped with a hanging indent', () => {
+  const { buildTicketData } = freshPrinter();
+  const lines = paperLines(buildTicketData({
+    orderNumber: '3',
+    items: [{ name: 'Shiro', quantity: 1, note: 'no onion, no berbere, and bring it out with the injera already on the table' }]
+  }, { lineWidth: 32 }));
+
+  const dish = lines.findIndex(l => l.text.includes('Shiro'));
+  const remark = lines.slice(dish + 1).filter(l => l.text.startsWith('     ') && l.text.trim());
+  // Under the name: "1x" is four columns double width, and one more before the name.
+  assert.match(remark[0].text, /^ {5}> no onion/);
+  assert.ok(remark.length > 1, 'expected the remark to wrap at 32 columns');
+  for (const more of remark.slice(1)) {
+    assert.match(more.text, /^ {7}\S/, `"${more.text}" should hang under the remark, not the marker`);
+  }
+  assert.ok(remark.every(l => !l.wide), 'remarks in ordinary type');
 });
 
 test('a ticket carries no money at all', () => {
@@ -139,42 +246,97 @@ test('a ticket carries no money at all', () => {
     station: 'kitchen',
     orderNumber: '002',
     table: 7,
-    items: [{ name: 'Tibs', quantity: 1 }]
+    // Even when the item arrives with a price, which a ticket has no field for.
+    items: [{ name: 'Tibs', quantity: 1, price: 260 }]
   }).join('');
 
-  for (const forbidden of ['VAT', 'TIN', 'Total', 'Subtotal', 'ETB']) {
+  for (const forbidden of ['VAT', 'TIN', 'Total', 'TOTAL', 'Subtotal', 'ETB', 'Birr', '260']) {
     assert.ok(!out.includes(forbidden), `a production ticket must not mention ${forbidden}`);
   }
 });
 
-test('an item note reaches the person cooking it', () => {
+test('a ticket with no table puts the order number large instead', () => {
   const { buildTicketData } = freshPrinter();
-  const out = buildTicketData({
-    orderNumber: '3',
-    items: [{ name: 'Shiro', quantity: 1, note: 'no berbere' }]
-  }).join('');
+  const lines = paperLines(buildTicketData({
+    station: 'kitchen', orderNumber: 'A-0139', table: null, time: '12:58',
+    items: [{ name: 'Firfir', quantity: 1 }]
+  }));
 
-  assert.match(out, /no berbere/);
+  assert.ok(!lines.some(l => l.text.includes('TABLE')), 'no table line when there is no table');
+  const number = lines.find(l => l.text === '#A-0139');
+  assert.ok(number && number.wide, 'the order number in double-size type');
+  assert.strictEqual(lines[lines.indexOf(number) + 1].text, '12:58', 'the time alone beneath it');
 });
 
-test('a ticket ends with a cut, so each station gets its own paper', () => {
+test('table zero is still a table', () => {
+  const { buildTicketData } = freshPrinter();
+  const out = buildTicketData({ orderNumber: '5', table: 0, items: [{ name: 'Tibs', quantity: 1 }] });
+  assert.ok(paperLines(out).some(l => l.text === 'TABLE 0'));
+});
+
+test('the foot counts dishes, not lines', () => {
+  const { buildTicketData } = freshPrinter();
+  const count = (items) => paperLines(buildTicketData({ orderNumber: '1', items }))
+    .map(l => l.text).filter(t => /^\d+ items?$/.test(t));
+
+  assert.deepStrictEqual(count([{ name: 'Beer', quantity: 3 }, { name: 'Tej', quantity: 2 }]), ['5 items']);
+  assert.deepStrictEqual(count([{ name: 'Tej', quantity: 1 }]), ['1 item']);
+});
+
+test('a station prints the dishes it was sent and counts only those', () => {
+  // The API splits an order by station; the bar's ticket holds the drinks and nothing else.
+  const { buildTicketData } = freshPrinter();
+  const out = buildTicketData({
+    station: 'bar', orderNumber: '7', table: 2,
+    items: [{ name: 'Habesha Beer', quantity: 2 }, { name: 'Ambo Water', quantity: 1 }]
+  });
+  const text = paperLines(out).map(l => l.text);
+
+  assert.ok(text.includes('2x Habesha Beer'));
+  assert.ok(text.includes('1x Ambo Water'));
+  assert.ok(text.includes('3 items'));
+});
+
+test("the order's own note is boxed under the items", () => {
+  const { buildTicketData } = freshPrinter();
+  const lines = paperLines(buildTicketData({
+    orderNumber: '8', table: 1,
+    note: 'Guest has a nut allergy. Serve the fasting dishes first, the meat together after.',
+    items: [{ name: 'Tibs', quantity: 1 }]
+  }, { lineWidth: 32 })).map(l => l.text);
+
+  const top = lines.indexOf('+' + '-'.repeat(30) + '+');
+  assert.ok(top > lines.findIndex(t => t.includes('Tibs')), 'the box comes after the food');
+  const inside = lines.slice(top + 1, lines.indexOf(lines[top], top + 1));
+  assert.ok(inside.length > 1);
+  assert.match(inside[0], /^\| NOTE: Guest has a nut/);
+  for (const l of inside) assert.ok(l.length === 32 && l.endsWith(' |'), `"${l}"`);
+
+  const plain = paperLines(buildTicketData({ orderNumber: '8', items: [{ name: 'Tibs', quantity: 1 }] }));
+  assert.ok(!plain.some(l => l.text.includes('NOTE')), 'no box without a note');
+});
+
+test('an Amharic name is measured as it prints, transliterated', () => {
+  const { buildTicketData } = freshPrinter();
+  const lines = paperLines(buildTicketData({
+    orderNumber: '6',
+    items: [{ name: 'ሽሮ ፈሰስ በቅቤ ከአይብ ጋር ልዩ', quantity: 1 }]
+  }, { lineWidth: 32 }));
+  for (const l of lines) {
+    assert.match(l.text, /^[\x20-\x7E]*$/, `"${l.text}" is not something the printer can show`);
+    assert.ok(l.cols <= 32, `"${l.text}" is ${l.cols} columns`);
+  }
+  assert.ok(lines.some(l => l.text.includes('shro')));
+});
+
+test('a ticket ends with a cut, and has no buzzer to sound', () => {
   const { buildTicketData } = freshPrinter();
   const out = buildTicketData({ orderNumber: '3', items: [{ name: 'Tibs', quantity: 1 }] }).join('');
 
   assert.ok(out.endsWith('\x1DV\x00'), 'expected a paper cut at the end');
-});
-
-test('a takeaway with no table still prints', () => {
-  const { buildTicketData } = freshPrinter();
-  const out = buildTicketData({
-    station: 'kitchen',
-    orderNumber: '9',
-    table: null,
-    items: [{ name: 'Firfir', quantity: 1 }]
-  }).join('');
-
-  assert.ok(!out.includes('TABLE'), 'no table line when there is no table');
-  assert.match(out, /1 x Firfir/);
+  assert.ok(!out.includes('\x07') && !out.includes('\x1BB'), 'no beep: nothing here drives a buzzer');
+  assert.ok(buildTicketData({ orderNumber: '3', items: [{ name: 'Tibs', quantity: 1 }] }, { cut: 'partial' })
+    .join('').endsWith('\x1DV\x01'), 'a station set to partial cuts partially');
 });
 
 /**

@@ -959,6 +959,26 @@ module.exports = {
  *
  * One ticket per station, so an order of tibs and two beers prints food in the kitchen and drinks
  * at the bar rather than one list somebody has to divide by hand.
+ *
+ * Laid out like a kitchen screen's card, read at arm's length on a busy pass:
+ *
+ *   - the station in a black bar, then the table in double-size type, with the order number and
+ *     the time under it. No table (a takeaway or a delivery) puts the order number large instead;
+ *   - the waiter, small;
+ *   - REPRINT in a black bar when this is a second copy, so the order is not cooked twice;
+ *   - each dish with its quantity double-size in a column of its own and its name bold in
+ *     double-height type, wrapped under itself rather than under the quantity, and the remark
+ *     indented beneath in ordinary type;
+ *   - the order's own note in a box;
+ *   - how many dishes are on the ticket, then the cut.
+ *
+ * Every column count is the printer's own: double width takes two columns a character, so the
+ * double-size lines wrap at half the width. Text goes through toPrintable before it is measured,
+ * because Ethiopic is transliterated to Latin letters and "ሽሮ" is two characters on screen and four
+ * on paper.
+ *
+ * Only the item's printed name. No ESC/POS code page holds Ethiopic, so nameAm could only come out
+ * transliterated under the name it translates — the receipt does not print it either.
  */
 function buildTicketData(ticket, opts = {}) {
     const ESC = '\x1B';
@@ -967,55 +987,138 @@ function buildTicketData(ticket, opts = {}) {
     const FEED_LINES = opts.feedLines || 4;
     const CUT_STYLE  = opts.cut === 'partial' ? 'partial' : 'full';
     const CODE_PAGE  = codePageByte(opts.codepage);
+    // Characters on a double-width line.
+    const BIG_WIDTH  = Math.floor(LINE_WIDTH / 2);
 
     const out = [];
     const init = () => out.push(ESC + '@' + ESC + 't' + String.fromCharCode(CODE_PAGE));
     const center = () => out.push(ESC + 'a' + '\x01');
     const left = () => out.push(ESC + 'a' + '\x00');
     const bold = (on) => out.push(ESC + 'E' + (on ? '\x01' : '\x00'));
-    // Double height and width. A cook reads this at arm's length over a pass.
-    const big = (on) => out.push(GS + '!' + (on ? '\x11' : '\x00'));
-    const rule = () => out.push('-'.repeat(LINE_WIDTH) + '\n');
+    // GS ! n: 0x11 is double width and height, 0x01 double height only, 0x00 normal.
+    const BIG = 0x11;
+    const TALL = 0x01;
+    const NORMAL = 0x00;
+    const size = (n) => out.push(GS + '!' + String.fromCharCode(n));
+    // GS B: white on black. Pads to the edge of the paper so it reads as a bar, not a highlight.
+    const inverted = (on) => out.push(GS + 'B' + (on ? '\x01' : '\x00'));
+    const line = (s) => out.push(s + '\n');
+
+    /** As it will reach the paper: transliterated, single-spaced, trimmed. */
+    const text = (value) =>
+        value === null || value === undefined ? '' : toPrintable(value).replace(/\s+/g, ' ').trim();
+
+    /** Words onto lines of `width`; a word longer than a line is broken rather than overflowing. */
+    const wrap = (value, width) => {
+        const lines = [];
+        let current = '';
+        for (let word of text(value).split(' ')) {
+            if (!word) continue;
+            while (word.length > width) {
+                if (current) { lines.push(current); current = ''; }
+                lines.push(word.slice(0, width));
+                word = word.slice(width);
+            }
+            if (!word) continue;
+            if (!current) current = word;
+            else if (current.length + 1 + word.length <= width) current += ' ' + word;
+            else { lines.push(current); current = word; }
+        }
+        if (current) lines.push(current);
+        return lines;
+    };
+
+    /** A full-width black bar, double size, centred. */
+    const bar = (label) => {
+        bold(true);
+        size(BIG);
+        inverted(true);
+        for (const l of wrap(label, BIG_WIDTH)) {
+            const pad = BIG_WIDTH - l.length;
+            const before = Math.floor(pad / 2);
+            line(' '.repeat(before) + l + ' '.repeat(pad - before));
+        }
+        inverted(false);
+        size(NORMAL);
+        bold(false);
+    };
+
+    const items = ticket.items || [];
+    const hasTable = ticket.table !== null && ticket.table !== undefined;
+    const orderNumber = '#' + text(ticket.orderNumber);
 
     init();
 
+    // ---------- header ----------
     center();
+    bar(text(ticket.station) ? text(ticket.station).toUpperCase() : 'ORDER');
+
+    // The table is what a waiter carries the plate to, so it is the largest thing on the ticket.
+    // Without one the order number is what the food is called for by, so that goes large instead.
     bold(true);
-    big(true);
-    out.push(String(ticket.station || 'ORDER').toUpperCase() + '\n');
-    big(false);
+    size(BIG);
+    wrap(hasTable ? 'TABLE ' + ticket.table : orderNumber, BIG_WIDTH).forEach(line);
+    size(NORMAL);
     bold(false);
+
+    const under = [hasTable ? orderNumber : '', text(ticket.time)].filter(Boolean).join('   ');
+    if (under) (under.length <= LINE_WIDTH ? [under] : wrap(under, LINE_WIDTH)).forEach(line);
+    if (text(ticket.waiter)) wrap('Waiter: ' + text(ticket.waiter), LINE_WIDTH).forEach(line);
 
     // Before the food, where it cannot be missed: this order may already be on the pass.
     if (ticket.reprint) {
-        bold(true);
-        out.push('*** REPRINT ***\n');
-        bold(false);
+        line('');
+        bar('REPRINT');
     }
 
-    // The table is what a waiter carries the plate to, so it is the largest thing after the
-    // station. An order number identifies the ticket if two tables order the same thing.
-    if (ticket.table !== null && ticket.table !== undefined) {
-        big(true);
-        out.push('TABLE ' + ticket.table + '\n');
-        big(false);
-    }
-    out.push('#' + String(ticket.orderNumber || '') + '\n');
-    if (ticket.time) out.push(String(ticket.time) + '\n');
     left();
-    rule();
+    line('-'.repeat(LINE_WIDTH));
 
-    for (const item of ticket.items || []) {
-        big(true);
-        out.push(String(item.quantity) + ' x ' + String(item.name) + '\n');
-        big(false);
-        if (item.note) {
-            out.push('   ** ' + String(item.note) + '\n');
+    // ---------- items ----------
+    // The quantity column is as wide as the widest quantity on this ticket, so every name starts in
+    // the same place: "2x" double width is four columns, and one more separates it from the name.
+    const qtyLabels = items.map(item => String(item.quantity) + 'x');
+    const qtyChars = Math.max(2, ...qtyLabels.map(q => q.length));
+    const nameCol = qtyChars * 2 + 1;
+    const nameWidth = LINE_WIDTH - nameCol;
+    const indent = ' '.repeat(nameCol);
+
+    items.forEach((item, i) => {
+        const name = wrap(item.name, nameWidth);
+        bold(true);
+        size(BIG);
+        out.push(qtyLabels[i].padStart(qtyChars));
+        size(TALL);
+        line(' ' + (name[0] || ''));
+        name.slice(1).forEach(l => line(indent + l));
+        size(NORMAL);
+        bold(false);
+
+        if (text(item.note)) {
+            // Hanging under the marker, so a two-line remark reads as one.
+            wrap(item.note, nameWidth - 2).forEach((l, n) => line(indent + (n === 0 ? '> ' : '  ') + l));
         }
+    });
+
+    // ---------- the order's own note ----------
+    if (text(ticket.note)) {
+        const inner = LINE_WIDTH - 4;
+        const edge = '+' + '-'.repeat(LINE_WIDTH - 2) + '+';
+        line(edge);
+        bold(true);
+        wrap('NOTE: ' + text(ticket.note), inner).forEach(l => line('| ' + l.padEnd(inner) + ' |'));
+        bold(false);
+        line(edge);
+    } else {
+        line('-'.repeat(LINE_WIDTH));
     }
 
-    rule();
-    if (ticket.waiter) out.push('Waiter: ' + String(ticket.waiter) + '\n');
+    // ---------- footer ----------
+    // Dishes, not lines: two beers on one line are two things to pour.
+    const count = items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+    bold(true);
+    line(count + (count === 1 ? ' item' : ' items'));
+    bold(false);
 
     out.push('\n'.repeat(FEED_LINES));
     // Cut, so the next station's ticket is a separate piece of paper.
@@ -1309,6 +1412,9 @@ function buildTestPage(info, opts = {}) {
     big(true);
     out.push('Double\n');
     big(false);
+    // GS B, white on black: the station and REPRINT bars on a kitchen ticket. A printer without it
+    // prints the word plainly, which still reads but no longer stands out across a kitchen.
+    out.push(GS + 'B' + '\x01' + ' Inverted ' + GS + 'B' + '\x00' + '\n');
     center();
     out.push('Centred text\n');
     left();
