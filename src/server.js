@@ -1,9 +1,9 @@
 require('dotenv').config();
 const express = require('express');
 const http    = require('http');
-const { printReceipt, printTicket, printTestPage, stations, registerConfigured, defaultPrinterStatus } = require('./printer');
+const { printReceipt, printCreditNote, printTicket, printTestPage, stations, registerConfigured, defaultPrinterStatus } = require('./printer');
 const { networkPrinter } = require('./discovery');
-const { PrintPayloadSchema, TicketPayloadSchema, TestPrintSchema } = require('./validation');
+const { PrintPayloadSchema, CreditNotePayloadSchema, TicketPayloadSchema, TestPrintSchema } = require('./validation');
 
 const app  = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -153,7 +153,48 @@ app.post('/ticket', async (req, res) => {
   }
 });
 
+/**
+ * A Tax Credit Note, which reaches the bridge on /print because the API's relay forwards every print
+ * job there unchanged.
+ *
+ * Split off by its `type` before the receipt schema sees it: a credit note has none of a receipt's
+ * required fields, and would otherwise be refused as a receipt missing its TIN. Anything without
+ * that type is a receipt, exactly as before.
+ */
+async function printCreditNoteJob(req, res) {
+  const parsed = CreditNotePayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const errors = parsed.error.issues.map(issue => {
+      const path = issue.path.join('.');
+      return path ? `${path}: ${issue.message}` : issue.message;
+    });
+    return res.status(400).json({ success: false, errors });
+  }
+
+  const note = parsed.data;
+
+  // The same window as receipts. A relay retry after a slow printer must not hand the customer a
+  // second credit note — or open the drawer a second time for money that has already gone out.
+  if (isDuplicate(note.jobId)) {
+    console.log(`[dedup] Skipping duplicate credit note ${note.jobId}`);
+    return res.json({ success: true, message: 'duplicate, already printed' });
+  }
+
+  try {
+    await printCreditNote(note);
+    markPrinted(note.jobId);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error(`[credit-note] ${err.message}`);
+    return res.status(502).json({ success: false, error: err.message || 'Failed to print' });
+  }
+}
+
 app.post('/print', async (req, res) => {
+  if (req.body && req.body.type === 'CREDIT_NOTE') {
+    return printCreditNoteJob(req, res);
+  }
+
   const parsed = PrintPayloadSchema.safeParse(req.body);
   if (!parsed.success) {
     const errors = parsed.error.issues.map(issue => {

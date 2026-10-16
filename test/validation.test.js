@@ -138,3 +138,75 @@ test('a saved printer address is an IPv4 address or a hostname, on a real port',
   assert.ok(!TargetSchema.safeParse({ host: '10.0.0.5', port: 65536 }).success);
   assert.ok(!TargetSchema.safeParse({ host: '10.0.0.5', port: 9100, cut: 'half' }).success);
 });
+
+/**
+ * The Tax Credit Note job, exactly as the API's print relay forwards it.
+ */
+const { CreditNotePayloadSchema } = require('../src/validation');
+
+const creditNote = () => ({
+  type: 'CREDIT_NOTE',
+  jobId: 'cn-1',
+  restaurant: { name: 'Zing Coffee', tin: '0012345678', vatNumber: null, address: 'Mekanisa', phone: null },
+  creditNoteNumber: 'CN-000017',
+  originalInvoiceNumber: '000231',
+  orderNumber: '42',
+  table: 'A3',
+  issuedAt: '2026-10-16 14:05',
+  reason: 'Dish returned cold',
+  lines: [{ name: 'Macchiato', quantity: 1, amount: 60 }],
+  amount: 60,
+  vatIncluded: 7.83,
+  method: 'CASH',
+  issuedBy: null,
+  approvedBy: null,
+  openDrawer: true
+});
+
+test('the API\'s credit note payload is accepted, nulls and all', () => {
+  const parsed = CreditNotePayloadSchema.safeParse(creditNote());
+  assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+  // Normalised to absent, which is what the template tests for.
+  assert.strictEqual(parsed.data.restaurant.vatNumber, undefined);
+  assert.strictEqual(parsed.data.issuedBy, undefined);
+});
+
+test('a credit note with no invoice, no table and an empty restaurant still prints', () => {
+  const note = {
+    ...creditNote(),
+    originalInvoiceNumber: null,
+    table: null,
+    restaurant: { name: null, tin: null, vatNumber: null, address: null, phone: null }
+  };
+  const parsed = CreditNotePayloadSchema.safeParse(note);
+  assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+  assert.ok(CreditNotePayloadSchema.safeParse({ ...creditNote(), table: 7 }).success, 'a numeric table');
+});
+
+test('a malformed credit note is refused, and the field named', () => {
+  const refused = (patch, field) => {
+    const parsed = CreditNotePayloadSchema.safeParse({ ...creditNote(), ...patch });
+    assert.ok(!parsed.success, `accepted ${JSON.stringify(patch)}`);
+    assert.ok(
+      parsed.error.issues.some(i => i.path[0] === field),
+      `${JSON.stringify(patch)} did not name ${field}: ${JSON.stringify(parsed.error.issues)}`
+    );
+  };
+
+  refused({ jobId: undefined }, 'jobId');
+  refused({ jobId: '' }, 'jobId');
+  refused({ type: 'RECEIPT' }, 'type');
+  refused({ creditNoteNumber: '' }, 'creditNoteNumber');
+  refused({ lines: [] }, 'lines');
+  refused({ lines: [{ name: 'Tea', quantity: 0, amount: 10 }] }, 'lines');
+  refused({ lines: [{ name: 'Tea', quantity: 1, amount: -1 }] }, 'lines');
+  refused({ lines: [{ name: '', quantity: 1, amount: 1 }] }, 'lines');
+  refused({ amount: '60' }, 'amount');
+  refused({ amount: 0 }, 'amount');
+  refused({ vatIncluded: -1 }, 'vatIncluded');
+  refused({ vatIncluded: 61 }, 'vatIncluded');
+  refused({ method: 'CARD' }, 'method');
+  refused({ openDrawer: 'yes' }, 'openDrawer');
+  refused({ openDrawer: undefined }, 'openDrawer');
+  refused({ reason: '  ' }, 'reason');
+});

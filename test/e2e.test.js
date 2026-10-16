@@ -143,7 +143,7 @@ async function stayedEmpty(printer, ms = 600) {
  * in both directions: it leaves parameter bytes behind as visible characters, which makes every
  * measured line wider than the paper it was laid out for, and it eats the byte after ESC @ — which
  * takes no parameter — swallowing the first letter of whatever follows. The set below is exactly
- * what printer.js emits: ESC @, ESC t/a/E n, GS V n, and ESC p m t1 t2 for the drawer.
+ * what printer.js emits: ESC @, ESC t/a/E n, GS V n, GS ! n, and ESC p m t1 t2 for the drawer.
  */
 /**
  * Removes the QR blocks, which are the one command here that carries a length rather than a fixed
@@ -172,7 +172,7 @@ function paper(printer) {
     .replace(/\x1bp[\s\S]{3}/g, '')
     .replace(/\x1b@/g, '')
     .replace(/\x1b[taE][\s\S]/g, '')
-    .replace(/\x1dV[\s\S]/g, '')
+    .replace(/\x1d[V!][\s\S]/g, '')
     .replace(/[\x00-\x09\x0b\x0c\x0e-\x1f]/g, '');
 }
 
@@ -802,5 +802,104 @@ describe('stations saved in the admin, sent with each job', () => {
 
     const badTest = await bridge.post('/test-print', { target: { host: '10.0.0.5', port: 0 } });
     assert.equal(badTest.status, 400);
+  });
+});
+
+/**
+ * A Tax Credit Note through the receipt's own route.
+ *
+ * The API's relay forwards every print job to /print unchanged, so the bridge has to tell a credit
+ * note from a receipt by its type — and a receipt must not notice that anything changed.
+ */
+describe('a credit note on /print', () => {
+  let register, bridge;
+
+  const NOTE = {
+    type: 'CREDIT_NOTE',
+    jobId: 'cn-e2e-1',
+    restaurant: { name: 'Test Kitchen', tin: '0012345678', vatNumber: null, address: 'Bole, Addis Ababa', phone: null },
+    creditNoteNumber: 'CN-000017',
+    originalInvoiceNumber: '77',
+    orderNumber: '002',
+    table: 7,
+    issuedAt: '2026-10-16 14:05',
+    reason: 'Dish returned cold',
+    lines: [{ name: 'Tibs', quantity: 1, amount: 299 }],
+    amount: 299,
+    vatIncluded: 39,
+    method: 'CASH',
+    issuedBy: 'Sara',
+    approvedBy: null,
+    openDrawer: true
+  };
+  const DRAWER = '\x1bp\x00\x19\xfa';
+
+  before(async () => {
+    register = await fakePrinter();
+    bridge = await startBridge({
+      PRINT_SHARED_SECRET: KEY,
+      PRINTER_HOST: '127.0.0.1',
+      PRINTER_PORT: String(register.port)
+    });
+  });
+
+  after(async () => {
+    await bridge?.stop();
+    await register?.close();
+  });
+
+  test('prints at the register as a credit note, and opens the drawer for cash', async () => {
+    register.reset();
+    const res = await bridge.post('/print', NOTE);
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(register), 'the credit note never reached the printer');
+
+    const slip = paper(register);
+    assert.match(slip, /TAX CREDIT NOTE/);
+    assert.match(slip, /CN-000017/);
+    assert.match(slip, /TOTAL RETURNED +299/);
+    assert.match(slip, /Returned in cash/);
+    assert.doesNotMatch(slip, /SUBTOTAL|DUPLICATE|IRN/, 'printed through the receipt template');
+    assert.ok(register.streams[0].toString('latin1').includes(DRAWER), 'the drawer did not open');
+  });
+
+  test('a retry of the same jobId prints nothing', async () => {
+    register.reset();
+    const res = await bridge.post('/print', NOTE);
+
+    assert.strictEqual(res.body.message, 'duplicate, already printed');
+    assert.ok(await stayedEmpty(register), 'the same credit note printed twice');
+  });
+
+  test('mobile money prints without opening the drawer', async () => {
+    register.reset();
+    const res = await bridge.post('/print', { ...NOTE, jobId: 'cn-e2e-chapa', method: 'CHAPA' });
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(register));
+    assert.match(paper(register), /Returned to mobile money/);
+    assert.ok(!register.streams[0].toString('latin1').includes('\x1bp'), 'the drawer opened for mobile money');
+  });
+
+  test('a malformed credit note is refused by its own fields, not the receipt\'s', async () => {
+    const bad = await bridge.post('/print', { ...NOTE, jobId: 'cn-e2e-bad', lines: [], openDrawer: 'yes' });
+
+    assert.strictEqual(bad.status, 400);
+    const said = JSON.stringify(bad.body);
+    assert.match(said, /lines/);
+    assert.match(said, /openDrawer/);
+    assert.doesNotMatch(said, /tin|businessName/, 'validated as a receipt');
+  });
+
+  test('a job without the type is still a receipt', async () => {
+    register.reset();
+    const res = await bridge.post('/print', { ...RECEIPT, jobId: 'cn-e2e-receipt' });
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(register));
+    const slip = paper(register);
+    assert.match(slip, /SUBTOTAL/);
+    assert.doesNotMatch(slip, /CREDIT NOTE/);
   });
 });

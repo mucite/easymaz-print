@@ -185,7 +185,69 @@ const TestPrintSchema = z.object({
     target: TargetSchema.nullish()
 });
 
+/**
+ * A Tax Credit Note: the document Directive 1142/2018 E.C. Art 25 asks for when a sale is returned,
+ * in part or in full.
+ *
+ * Its own schema rather than optional fields on the receipt's, because it is a different document
+ * that happens to arrive on the same route. The API's print relay forwards whatever it is handed to
+ * /print, and the `type` is how the bridge tells the two apart. Grafting it onto the receipt schema
+ * would have meant a credit note carrying an invoice type, a subtotal and a service charge it does
+ * not have, or every receipt field turning optional to make room for one.
+ *
+ * Lenient where the API may legitimately have nothing — the restaurant's identifiers, the invoice
+ * being credited, the table, who issued and approved it. Those are printed when present and omitted
+ * when not, the same rule the receipt follows, and refusing to print a refund over a missing phone
+ * number would leave money handed back with no paper behind it.
+ *
+ * Strict on what the document is for: the money, the lines, the method, and whether the drawer
+ * opens. A wrong amount on a credit note is a wrong tax return, and a drawer flag that is anything
+ * but a boolean is a till opening on a guess.
+ */
+const CreditNoteLineSchema = z.object({
+    name: z.string().min(1, 'Line name is required'),
+    quantity: z.number().positive('Line quantity must be > 0'),
+    amount: z.number().nonnegative('Line amount must be >= 0')
+});
+
+const CreditNotePayloadSchema = z.object({
+    type: z.literal('CREDIT_NOTE'),
+    // Required, unlike a receipt's. A refund printed twice is two documents saying the same money
+    // went back twice, and the relay retries.
+    jobId: z.string().min(1, 'jobId is required'),
+    // nullish rather than required: the header prints what it is given, and a restaurant row with
+    // nothing on it still has a credit note to issue.
+    restaurant: z.object({
+        name: optionalText,
+        tin: optionalText,
+        vatNumber: optionalText,
+        address: optionalText,
+        phone: optionalText
+    }).nullish(),
+    creditNoteNumber: z.string().min(1, 'Credit note number is required'),
+    // A sale settled before the invoice series existed has no number to credit against. The order
+    // number below still identifies it.
+    originalInvoiceNumber: optionalText,
+    orderNumber: z.string().min(1, 'Order number is required'),
+    table: z.union([z.string(), z.number()]).nullish(),
+    issuedAt: z.string().min(1, 'Issue time is required'),
+    reason: z.string().trim().min(1, 'A reason is required'),
+    lines: z.array(CreditNoteLineSchema).min(1, 'A credit note with no lines credits nothing'),
+    amount: z.number().positive('Amount returned must be > 0'),
+    vatIncluded: z.number().nonnegative('VAT included must be >= 0'),
+    method: z.enum(['CASH', 'CHAPA']),
+    issuedBy: optionalText,
+    approvedBy: optionalText,
+    openDrawer: z.boolean()
+}).refine(note => note.vatIncluded <= note.amount, {
+    // Included in the amount, as on the receipt. More VAT than money is arithmetic gone wrong
+    // upstream, and paper is the wrong place to discover it.
+    message: 'VAT included cannot exceed the amount returned',
+    path: ['vatIncluded']
+});
+
 module.exports = {
+    CreditNotePayloadSchema,
     PrintPayloadSchema,
     TicketPayloadSchema,
     TestPrintSchema,

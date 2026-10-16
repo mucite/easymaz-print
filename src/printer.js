@@ -214,6 +214,17 @@ function withoutUnsoldCodes(receipt) {
 }
 
 /**
+ * 150, not 150.00; santim that are there print to two places. Same rule as the admin's slip.
+ *
+ * Module scope because the receipt and the credit note both print money, and a refund of 150 that
+ * reads 150.00 under a sale that read 150 is two documents disagreeing about the same figure.
+ */
+function money(v) {
+    const n = Math.round(Number(v || 0) * 100) / 100;
+    return Number.isInteger(n) ? String(n) : n.toFixed(2);
+}
+
+/**
  * Build an ESC/POS data array from a PrintPayload object.
  * Options:
  *   lineWidth: chars per line (32, 42, 48...) default 32
@@ -232,11 +243,7 @@ function buildEscposData(receipt, opts = {}) {
     const CODE_PAGE  = codePageByte(opts.codepage);
 
     const lines = [];
-    // 150, not 150.00; santim that are there print to two places. Same rule as the admin's slip.
-    const fmt = (v) => {
-        const n = Math.round(Number(v || 0) * 100) / 100;
-        return Number.isInteger(n) ? String(n) : n.toFixed(2);
-    };
+    const fmt = money;
     const repeat = (ch, n) => ch.repeat(Math.max(0, n));
 
     const wrapText = (text) => {
@@ -1034,6 +1041,184 @@ function printTicket(ticket, address) {
 
 module.exports.printTicket = printTicket;
 module.exports.buildTicketData = buildTicketData;
+
+// ---------- tax credit notes ----------
+
+/**
+ * A Tax Credit Note: the paper behind money handed back for a sale (Directive 1142/2018 E.C. Art 25).
+ *
+ * Laid out like the receipt it reverses — same header, same identifiers, same code page and cut — so
+ * the two read as a pair to the customer and to an inspector holding both. Three things are
+ * deliberately different:
+ *
+ *   No QR, IRN, RRN or receipt link. Those belong to a registered sale (Art 4(1)(c)-(d)); a credit
+ *   note is not one, and a code on it would scan to the sale it is cancelling.
+ *   Never DUPLICATE. The jobId window stops a retry printing twice; a credit note asked for again is
+ *   a new job the API decides on, not a reprint this bridge should label.
+ *   A signature line on a cash return. Cash leaves the drawer with nothing else to show who took it;
+ *   mobile money leaves a record at the gateway, so the line would only be paper to sign for nothing.
+ *
+ * Returns the same array of ESC/POS strings the other builders do, for the same toPrintable/latin1
+ * step in printCreditNote.
+ */
+function buildCreditNoteData(note, opts = {}) {
+    const ESC = '\x1B';
+    const GS  = '\x1D';
+    const LINE_WIDTH = opts.lineWidth || DEFAULT_WIDTH;
+    const AUTO_CUT   = opts.autoCut !== undefined ? opts.autoCut : true;
+    const FEED_LINES = opts.feedLines || 4;
+    const CUT_STYLE  = opts.cut === 'partial' ? 'partial' : 'full';
+    const CODE_PAGE  = codePageByte(opts.codepage);
+
+    const out = [];
+    const center = () => out.push(ESC + 'a' + '\x01');
+    const left = () => out.push(ESC + 'a' + '\x00');
+    const bold = (on) => out.push(ESC + 'E' + (on ? '\x01' : '\x00'));
+    // Double height only, not width: the total has to stay on the same columns as the lines above
+    // it, and double width would halve 48 columns to 24.
+    const tall = (on) => out.push(GS + '!' + (on ? '\x01' : '\x00'));
+    const rule = () => out.push('-'.repeat(LINE_WIDTH) + '\n');
+
+    // Word wrap at the paper's width, as the receipt does, so a long address or reason breaks between
+    // words instead of wherever the printer runs out of columns.
+    const wrap = (text, width = LINE_WIDTH) => {
+        const res = [];
+        let line = '';
+        for (const word of String(text || '').split(/\s+/)) {
+            if (!word) continue;
+            const test = line ? line + ' ' + word : word;
+            if (test.length > width && line) {
+                res.push(line);
+                line = word;
+            } else {
+                line = test;
+            }
+        }
+        if (line) res.push(line);
+        return res;
+    };
+    const centred = (text) => wrap(text).forEach(l => out.push(l + '\n'));
+
+    // Label and value at opposite edges — the receipt's "Order :      002" line.
+    const info = (label, value) => {
+        const l = label + ' : ';
+        const v = String(value);
+        out.push(l + ' '.repeat(Math.max(1, LINE_WIDTH - l.length - v.length)) + v + '\n');
+    };
+    // Text on the left, an amount right-aligned. A name too long for the space left by the amount
+    // wraps beneath it rather than pushing the amount off the edge.
+    const amountLine = (text, amount) => {
+        const r = money(amount);
+        const room = Math.max(1, LINE_WIDTH - r.length - 1);
+        const [first = '', ...rest] = wrap(text, room);
+        out.push(first + ' '.repeat(Math.max(1, LINE_WIDTH - first.length - r.length)) + r + '\n');
+        rest.forEach(l => out.push('  ' + l + '\n'));
+    };
+
+    const r = note.restaurant || {};
+
+    out.push(ESC + '@');
+    out.push(ESC + 't' + String.fromCharCode(CODE_PAGE));
+
+    // ---------- header, as the receipt's ----------
+    center();
+    if (r.name) {
+        bold(true);
+        centred(String(r.name).toUpperCase());
+        bold(false);
+    }
+    if (r.address) centred(r.address);
+    if (r.phone)   centred('TEL: ' + r.phone);
+    out.push('\n');
+    if (r.tin)       centred('TIN: ' + r.tin);
+    if (r.vatNumber) centred('VAT No: ' + r.vatNumber);
+    out.push('\n');
+
+    // What this paper is, large, before any figure on it — a credit note mistaken for a receipt is a
+    // sale counted twice.
+    bold(true);
+    tall(true);
+    centred('TAX CREDIT NOTE');
+    tall(false);
+    bold(false);
+    out.push('\n');
+
+    // ---------- which sale it reverses ----------
+    left();
+    info('Credit note', note.creditNoteNumber);
+    if (note.originalInvoiceNumber) info('For invoice', note.originalInvoiceNumber);
+    info('Order', note.orderNumber);
+    // Presence, not truthiness: table 0 is a table.
+    if (note.table !== null && note.table !== undefined && note.table !== '') info('Table', note.table);
+    info('Issued', note.issuedAt);
+    rule();
+
+    // ---------- what went back ----------
+    for (const line of note.lines || []) {
+        amountLine(`${money(line.quantity)} x ${line.name}`, line.amount);
+    }
+    rule();
+
+    bold(true);
+    tall(true);
+    amountLine('TOTAL RETURNED', note.amount);
+    tall(false);
+    bold(false);
+    // Included in the amount, not added to it, as on the receipt — and only when there is some, as
+    // on the receipt: a restaurant that is not VAT-registered charged none and refunds none.
+    if (note.vatIncluded) amountLine('VAT included', note.vatIncluded);
+    out.push('\n');
+
+    // How it went back, in words a customer knows. Never the gateway's name, for the same reason
+    // the receipt never says CHAPA.
+    out.push((note.method === 'CASH' ? 'Returned in cash' : 'Returned to mobile money') + '\n');
+    wrap('Reason: ' + note.reason).forEach(l => out.push(l + '\n'));
+    if (note.issuedBy)   info('Issued by', note.issuedBy);
+    if (note.approvedBy) info('Approved by', note.approvedBy);
+
+    if (note.method === 'CASH') {
+        // Room to sign above the rule. The customer signs for cash taken out of the drawer.
+        out.push('\n\n');
+        const label = 'Received by: ';
+        out.push(label + '_'.repeat(Math.max(1, LINE_WIDTH - label.length)) + '\n');
+    }
+
+    out.push('\n'.repeat(FEED_LINES));
+
+    if (AUTO_CUT) {
+        out.push(GS + 'V' + (CUT_STYLE === 'partial' ? '\x01' : '\x00'));
+    }
+
+    // The drawer, last, so the paper is out when it opens — the receipt's ESC p, the receipt's rule.
+    // Only when the API says so and the money is cash: a mobile-money return has nothing to take out
+    // of the drawer, and a cash return the API did not ask to open for (the cashier already paid it
+    // out) must not hand anyone an open till.
+    if (CASH_DRAWER && note.openDrawer === true && note.method === 'CASH') {
+        out.push(ESC + 'p' + '\x00' + '\x19' + '\xFA');
+    }
+
+    return out;
+}
+
+/**
+ * Prints a credit note at the register. No station: it is a document handed to a customer at the
+ * counter, where the cash is.
+ */
+function printCreditNote(note) {
+    const target = resolveStation();
+    const data = buildCreditNoteData(note, {
+        lineWidth: target.width,
+        cut: target.cut,
+        codepage: target.codepage,
+        autoCut: true,
+        feedLines: 4
+    });
+    const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
+    return send(rawBuffer, target);
+}
+
+module.exports.printCreditNote = printCreditNote;
+module.exports.buildCreditNoteData = buildCreditNoteData;
 
 // ---------- self test ----------
 

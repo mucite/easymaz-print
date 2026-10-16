@@ -737,3 +737,161 @@ test('a restaurant that is not VAT registered prints no VAT at all', () => {
   const out = buildEscposData(CASH_SALE, {}).join('');
   assert.ok(!out.includes('VAT'), 'nothing about VAT');
 });
+
+/**
+ * The Tax Credit Note (Directive 1142/2018 E.C. Art 25): the paper behind money handed back.
+ *
+ * It shares the receipt's header and printer handling and almost nothing else. The tests below pin
+ * the parts that make it a different document — the title, the sale it reverses, the money going
+ * back and how — and the parts it must never borrow from a receipt: a QR, an IRN, a DUPLICATE
+ * banner, or a drawer that opens for mobile money.
+ */
+
+const CREDIT_NOTE = {
+  type: 'CREDIT_NOTE',
+  jobId: 'cn-1',
+  restaurant: {
+    name: 'Zing Coffee',
+    tin: '0012345678',
+    vatNumber: 'ETH0098765',
+    address: 'Bole Road, Addis Ababa',
+    phone: '+251 911 000 000'
+  },
+  creditNoteNumber: 'CN-000017',
+  originalInvoiceNumber: '000231',
+  orderNumber: 'ORD-0042',
+  table: 5,
+  issuedAt: '2026-10-16 14:05',
+  reason: 'Dish returned cold',
+  lines: [
+    { name: 'Tibs', quantity: 2, amount: 240 },
+    { name: 'Macchiato', quantity: 1, amount: 60.5 }
+  ],
+  amount: 300.5,
+  vatIncluded: 39.2,
+  method: 'CASH',
+  issuedBy: 'Sara',
+  approvedBy: 'Musie',
+  openDrawer: true
+};
+
+const DRAWER = ESC + 'p' + '\x00' + '\x19' + '\xFA';
+
+/** printer.js with CASH_DRAWER set as given, read fresh — it is a load-time constant. */
+function printerWithDrawer(value) {
+  const previous = process.env.CASH_DRAWER;
+  if (value === undefined) delete process.env.CASH_DRAWER;
+  else process.env.CASH_DRAWER = value;
+  try {
+    return freshPrinter();
+  } finally {
+    if (previous === undefined) delete process.env.CASH_DRAWER;
+    else process.env.CASH_DRAWER = previous;
+  }
+}
+
+test('a credit note says what it is, which sale it reverses, and what went back', () => {
+  const { buildCreditNoteData } = freshPrinter();
+  const out = buildCreditNoteData(CREDIT_NOTE, { lineWidth: 48 }).join('');
+
+  assert.match(out, /TAX CREDIT NOTE/);
+  assert.match(out, /ZING COFFEE/, 'the business name, capitalised as on the receipt');
+  assert.ok(out.includes('TIN: 0012345678'));
+  assert.ok(out.includes('VAT No: ETH0098765'));
+  assert.ok(out.includes('TEL: +251 911 000 000'));
+  assert.match(out, /Credit note : +CN-000017\n/);
+  assert.match(out, /For invoice : +000231\n/);
+  assert.match(out, /Order : +ORD-0042\n/);
+  assert.match(out, /Table : +5\n/);
+  assert.match(out, /Issued : +2026-10-16 14:05\n/);
+  assert.match(out, /2 x Tibs +240\n/);
+  assert.match(out, /1 x Macchiato +60\.50\n/);
+  assert.match(out, /TOTAL RETURNED +300\.50\n/);
+  assert.match(out, /VAT included +39\.20\n/);
+  assert.match(out, /Returned in cash\n/);
+  assert.match(out, /Reason: Dish returned cold\n/);
+  assert.match(out, /Issued by : +Sara\n/);
+  assert.match(out, /Approved by : +Musie\n/);
+  assert.match(out, /Received by: _+\n/, 'the customer signs for cash');
+});
+
+test('the total returned is bold and tall, and the title is too', () => {
+  const { buildCreditNoteData } = freshPrinter();
+  const out = buildCreditNoteData(CREDIT_NOTE, {}).join('');
+
+  // Bold, then double height, then the words: what the reader sees first and what a torn slip keeps.
+  const large = ESC + 'E' + '\x01' + GS + '!' + '\x01';
+  assert.ok(out.includes(large + 'TAX CREDIT NOTE\n'), 'the title is printed large');
+  assert.ok(out.includes(large + 'TOTAL RETURNED'), 'the total is printed large');
+  // And switched off again, so the reason is not printed in headline type.
+  assert.ok(out.indexOf(GS + '!' + '\x00', out.indexOf('TOTAL RETURNED')) < out.indexOf('Reason'));
+});
+
+test('a credit note carries no fiscal QR, IRN, receipt link or DUPLICATE banner', () => {
+  const { buildCreditNoteData } = freshPrinter();
+  // Fields a receipt would act on, smuggled in: none of them may reach the paper.
+  const out = buildCreditNoteData(
+    { ...CREDIT_NOTE, irn: 'IRN-1', rrn: 'RRN-1', fiscalQr: 'https://qr', receiptUrl: 'https://r', isReceiptPrinted: true },
+    {}
+  ).join('');
+
+  assert.ok(!out.includes(GS + '(' + 'k'), 'no QR command');
+  assert.doesNotMatch(out, /IRN|RRN|QR|DUPLICATE|https:/);
+});
+
+test('a mobile-money return says so, has no signature line and never opens the drawer', () => {
+  const { buildCreditNoteData } = printerWithDrawer(undefined);
+  const out = buildCreditNoteData({ ...CREDIT_NOTE, method: 'CHAPA', openDrawer: true }, {}).join('');
+
+  assert.match(out, /Returned to mobile money\n/);
+  assert.doesNotMatch(out, /CHAPA/, 'the gateway is not a word a customer knows');
+  assert.doesNotMatch(out, /Received by/);
+  assert.ok(!out.includes(ESC + 'p'), 'no drawer pulse for mobile money');
+});
+
+test('a cash return opens the drawer only when asked, and after the cut', () => {
+  const { buildCreditNoteData } = printerWithDrawer(undefined);
+
+  const opened = buildCreditNoteData(CREDIT_NOTE, {}).join('');
+  assert.ok(opened.includes(DRAWER), 'CASH + openDrawer fires the drawer');
+  assert.ok(opened.indexOf(GS + 'V') < opened.indexOf(DRAWER), 'paper out before the drawer opens');
+
+  const notAsked = buildCreditNoteData({ ...CREDIT_NOTE, openDrawer: false }, {}).join('');
+  assert.ok(!notAsked.includes(ESC + 'p'), 'openDrawer false keeps it shut');
+});
+
+test('CASH_DRAWER=off keeps the drawer shut on a cash return too', () => {
+  const { buildCreditNoteData } = printerWithDrawer('off');
+  const out = buildCreditNoteData(CREDIT_NOTE, {}).join('');
+  assert.ok(!out.includes(ESC + 'p'));
+});
+
+test('what the API may not have is omitted, not printed empty', () => {
+  const { buildCreditNoteData } = freshPrinter();
+  const bare = {
+    ...CREDIT_NOTE,
+    restaurant: { name: null, tin: null, vatNumber: null, address: null, phone: null },
+    originalInvoiceNumber: undefined,
+    table: null,
+    issuedBy: undefined,
+    approvedBy: undefined,
+    vatIncluded: 0
+  };
+  const out = buildCreditNoteData(bare, {}).join('');
+
+  assert.match(out, /TAX CREDIT NOTE/);
+  assert.doesNotMatch(out, /TIN:|VAT No:|TEL:|For invoice|Table|Issued by|Approved by|VAT included/);
+  assert.match(out, /TOTAL RETURNED +300\.50/);
+});
+
+test('a credit note fits 58 mm paper, long names and all', () => {
+  const { buildCreditNoteData } = freshPrinter();
+  const long = { ...CREDIT_NOTE, lines: [{ name: 'Special combination platter with extra injera', quantity: 1, amount: 300.5 }] };
+  const text = buildCreditNoteData(long, { lineWidth: 32 }).join('')
+    .replace(/\x1bp[\s\S]{3}/g, '').replace(/\x1b@/g, '').replace(/\x1b[taE][\s\S]/g, '')
+    .replace(/\x1d[!V][\s\S]/g, '');
+  for (const line of text.split('\n')) {
+    assert.ok(line.length <= 32, `"${line}" is ${line.length} columns`);
+  }
+  assert.match(text, /300\.50/);
+});
