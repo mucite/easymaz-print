@@ -884,6 +884,13 @@ test('what the API may not have is omitted, not printed empty', () => {
   assert.match(out, /TOTAL RETURNED +300\.50/);
 });
 
+test('a VAT-registered restaurant prints VAT included on every credit note, even at 0', () => {
+  const { buildCreditNoteData } = freshPrinter();
+  const out = buildCreditNoteData({ ...CREDIT_NOTE, vatIncluded: 0 }, { lineWidth: 48 }).join('');
+
+  assert.match(out, /VAT included +0\n/);
+});
+
 test('a credit note fits 58 mm paper, long names and all', () => {
   const { buildCreditNoteData } = freshPrinter();
   const long = { ...CREDIT_NOTE, lines: [{ name: 'Special combination platter with extra injera', quantity: 1, amount: 300.5 }] };

@@ -1164,9 +1164,9 @@ function buildCreditNoteData(note, opts = {}) {
     amountLine('TOTAL RETURNED', note.amount);
     tall(false);
     bold(false);
-    // Included in the amount, not added to it, as on the receipt — and only when there is some, as
-    // on the receipt: a restaurant that is not VAT-registered charged none and refunds none.
-    if (note.vatIncluded) amountLine('VAT included', note.vatIncluded);
+    // Included in the amount, not added to it. Printed on every note from a VAT-registered
+    // restaurant, even at 0; left off for one without a VAT number, which charged none.
+    if (r.vatNumber) amountLine('VAT included', note.vatIncluded || 0);
     out.push('\n');
 
     // How it went back, in words a customer knows. Never the gateway's name, for the same reason
