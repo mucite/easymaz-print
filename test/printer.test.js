@@ -880,11 +880,12 @@ test('what the API may not have is omitted, not printed empty', () => {
   const out = buildCreditNoteData(bare, {}).join('');
 
   assert.match(out, /TAX CREDIT NOTE/);
-  assert.doesNotMatch(out, /TIN:|VAT No:|TEL:|For invoice|Table|Issued by|Approved by|VAT included/);
+  assert.doesNotMatch(out, /TIN:|VAT No:|TEL:|For invoice|Table|Issued by|Approved by/);
+  assert.match(out, /VAT included +0\n/, 'printed even without a VAT number');
   assert.match(out, /TOTAL RETURNED +300\.50/);
 });
 
-test('a VAT-registered restaurant prints VAT included on every credit note, even at 0', () => {
+test('every credit note prints VAT included, even at 0', () => {
   const { buildCreditNoteData } = freshPrinter();
   const out = buildCreditNoteData({ ...CREDIT_NOTE, vatIncluded: 0 }, { lineWidth: 48 }).join('');
 
