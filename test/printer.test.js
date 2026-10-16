@@ -732,6 +732,16 @@ test('menu prices include VAT: it prints under the total, as included, never add
   assert.ok(out.indexOf('TOTAL') < out.indexOf('VAT 15% INCL'), 'under the total, not above it');
 });
 
+test('a VAT-registered restaurant prints its VAT lines on every receipt, even at 0', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(
+    { ...CASH_SALE, vatRegistrationNumber: 'VAT-0001', taxableAmount: 0, vat: 0, vatPercentage: 15 },
+    {}
+  ).join('');
+  assert.match(out, /BEFORE VAT/);
+  assert.match(out, /VAT 15% INCL +0\n/);
+});
+
 test('a restaurant that is not VAT registered prints no VAT at all', () => {
   const { buildEscposData } = freshPrinter();
   const out = buildEscposData(CASH_SALE, {}).join('');
@@ -880,12 +890,11 @@ test('what the API may not have is omitted, not printed empty', () => {
   const out = buildCreditNoteData(bare, {}).join('');
 
   assert.match(out, /TAX CREDIT NOTE/);
-  assert.doesNotMatch(out, /TIN:|VAT No:|TEL:|For invoice|Table|Issued by|Approved by/);
-  assert.match(out, /VAT included +0\n/, 'printed even without a VAT number');
+  assert.doesNotMatch(out, /TIN:|VAT No:|TEL:|For invoice|Table|Issued by|Approved by|VAT included/);
   assert.match(out, /TOTAL RETURNED +300\.50/);
 });
 
-test('every credit note prints VAT included, even at 0', () => {
+test('a VAT-registered restaurant prints VAT included on every credit note, even at 0', () => {
   const { buildCreditNoteData } = freshPrinter();
   const out = buildCreditNoteData({ ...CREDIT_NOTE, vatIncluded: 0 }, { lineWidth: 48 }).join('');
 

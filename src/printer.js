@@ -411,7 +411,9 @@ function buildEscposData(receipt, opts = {}) {
     lines.push(ESC + 'E' + '\x00');
 
     // Included in the total, not added to it.
-    if (receipt.vat) {
+    // On every receipt from a VAT-registered restaurant, 0 included; never on one without a VAT
+    // number, which charges no VAT. The credit note follows the same rule.
+    if (receipt.vatRegistrationNumber) {
         lines.push(formatTotalLine("BEFORE VAT", receipt.taxableAmount));
         lines.push(formatTotalLine(vatPct ? `VAT ${vatPct}% INCL` : "VAT INCL", receipt.vat));
     }
@@ -1164,8 +1166,9 @@ function buildCreditNoteData(note, opts = {}) {
     amountLine('TOTAL RETURNED', note.amount);
     tall(false);
     bold(false);
-    // Included in the amount, not added to it. Printed on every note, 0 included.
-    amountLine('VAT included', note.vatIncluded || 0);
+    // Included in the amount, not added to it. Same rule as the receipt: on every note from a
+    // VAT-registered restaurant, 0 included; never on one without a VAT number.
+    if (r.vatNumber) amountLine('VAT included', note.vatIncluded || 0);
     out.push('\n');
 
     // How it went back, in words a customer knows. Never the gateway's name, for the same reason

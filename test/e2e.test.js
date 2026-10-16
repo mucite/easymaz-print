@@ -195,6 +195,7 @@ function ticket(station, jobId, items) {
 
 const RECEIPT = {
   tin: '0012345678',
+  vatRegistrationNumber: 'ETH0098765',
   businessName: 'Test Kitchen',
   address: 'Bole, Addis Ababa',
   fsNo: '77',
