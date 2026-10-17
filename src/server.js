@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const http    = require('http');
-const { printReceipt, printCreditNote, printTicket, printTestPage, stations, registerConfigured, defaultPrinterStatus } = require('./printer');
+const { printReceipt, printCreditNote, printTicket, printTestPage, openDrawer, stations, registerConfigured, defaultPrinterStatus } = require('./printer');
 const { networkPrinter } = require('./discovery');
 const { PrintPayloadSchema, CreditNotePayloadSchema, TicketPayloadSchema, TestPrintSchema } = require('./validation');
 
@@ -237,6 +237,18 @@ app.post('/print', async (req, res) => {
  * Not deduplicated, deliberately. The jobId window exists so a till's retry does not cook the food
  * twice; somebody testing a printer presses this repeatedly and means it every time.
  */
+// The cash drawer, opened on its own for a shift's count. Behind the same print key as every job.
+app.post('/drawer', async (req, res) => {
+  try {
+    await openDrawer();
+    console.log('[drawer] opened');
+    return res.json({ success: true });
+  } catch (err) {
+    console.error(`[drawer] ${err.message}`);
+    return res.status(502).json({ success: false, error: err.message });
+  }
+});
+
 app.post('/test-print', async (req, res) => {
   const parsed = TestPrintSchema.safeParse({
     station: (req.body && req.body.station) || req.query.station,

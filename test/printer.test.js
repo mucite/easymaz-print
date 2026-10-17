@@ -1074,3 +1074,8 @@ test('a credit note fits 58 mm paper, long names and all', () => {
   }
   assert.match(text, /300\.50/);
 });
+
+test('the drawer pulse is ESC p on pin 0 and nothing else', () => {
+  const { buildDrawerPulse } = require('../src/printer');
+  assert.deepStrictEqual(buildDrawerPulse(), ['\x1bp\x00\x19\xFA']);
+});

@@ -1323,6 +1323,28 @@ function printCreditNote(note) {
 }
 
 module.exports.printCreditNote = printCreditNote;
+
+/**
+ * The drawer pulse alone: ESC p, the same pin and timing a cash receipt sends, and nothing else —
+ * no paper. For the cashier opening the drawer to count it at the start and end of a shift; the
+ * API only asks for it as part of those logged steps. Refused when CASH_DRAWER is off, so a site
+ * with no drawer hears that rather than a silent success.
+ */
+function buildDrawerPulse() {
+    return [ESC + "p" + "\x00" + "\x19" + "\xFA"];
+}
+
+function openDrawer() {
+    if (!CASH_DRAWER) {
+        return Promise.reject(new Error('This register has no cash drawer set up (CASH_DRAWER=off).'));
+    }
+    const target = resolveStation();
+    const rawBuffer = Buffer.from(buildDrawerPulse().join(''), 'latin1');
+    return send(rawBuffer, target);
+}
+
+module.exports.openDrawer = openDrawer;
+module.exports.buildDrawerPulse = buildDrawerPulse;
 module.exports.buildCreditNoteData = buildCreditNoteData;
 
 // ---------- self test ----------
