@@ -152,7 +152,6 @@ The response says where it tried.
 | `PRINTER_CUT` | `full` | `full` or `partial`. |
 | `PRINTER_CODEPAGE` | `cp437` | Table selected with `ESC t`. |
 | `PRINTER_TIMEOUT_MS` | `5000` | Connect timeout. |
-| `CASH_DRAWER` | `on` | Pulse the printer's drawer kick port (RJ11) at the end of a cash sale. `off` for a site with no drawer. |
 | `PRINT_SHARED_SECRET` | — | Required by every route but `/health`. Unset, the bridge refuses to print. |
 | `PORT` | `3001` | HTTP port to listen on. |
 

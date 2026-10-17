@@ -473,6 +473,14 @@ test('a card sale does not open the drawer', () => {
   assert.ok(!out.includes(ESC + 'p'), 'no drawer pulse for a card payment');
 });
 
+test('a restaurant with no drawer keeps it shut on a cash sale (cashDrawer: false)', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData({ ...CASH_SALE, cashDrawer: false }, {}).join('');
+  assert.ok(!out.includes(ESC + 'p'), 'no drawer kick when the setting is off');
+  const on = buildEscposData({ ...CASH_SALE, cashDrawer: true }, {}).join('');
+  assert.ok(on.includes(ESC + 'p'), 'on, it opens as before');
+});
+
 test('an unpaid receipt does not open the drawer either', () => {
   const { buildEscposData } = freshPrinter();
   const unpaid = { ...CASH_SALE, isPaid: false };
@@ -949,19 +957,6 @@ const CREDIT_NOTE = {
 
 const DRAWER = ESC + 'p' + '\x00' + '\x19' + '\xFA';
 
-/** printer.js with CASH_DRAWER set as given, read fresh — it is a load-time constant. */
-function printerWithDrawer(value) {
-  const previous = process.env.CASH_DRAWER;
-  if (value === undefined) delete process.env.CASH_DRAWER;
-  else process.env.CASH_DRAWER = value;
-  try {
-    return freshPrinter();
-  } finally {
-    if (previous === undefined) delete process.env.CASH_DRAWER;
-    else process.env.CASH_DRAWER = previous;
-  }
-}
-
 test('a credit note says what it is, which sale it reverses, and what went back', () => {
   const { buildCreditNoteData } = freshPrinter();
   const out = buildCreditNoteData(CREDIT_NOTE, { lineWidth: 48 }).join('');
@@ -1012,7 +1007,7 @@ test('a credit note carries no fiscal QR, IRN, receipt link or DUPLICATE banner'
 });
 
 test('a mobile-money return says so, has no signature line and never opens the drawer', () => {
-  const { buildCreditNoteData } = printerWithDrawer(undefined);
+  const { buildCreditNoteData } = freshPrinter();
   const out = buildCreditNoteData({ ...CREDIT_NOTE, method: 'CHAPA', openDrawer: true }, {}).join('');
 
   assert.match(out, /Returned to mobile money\n/);
@@ -1022,7 +1017,7 @@ test('a mobile-money return says so, has no signature line and never opens the d
 });
 
 test('a cash return opens the drawer only when asked, and after the cut', () => {
-  const { buildCreditNoteData } = printerWithDrawer(undefined);
+  const { buildCreditNoteData } = freshPrinter();
 
   const opened = buildCreditNoteData(CREDIT_NOTE, {}).join('');
   assert.ok(opened.includes(DRAWER), 'CASH + openDrawer fires the drawer');
@@ -1030,12 +1025,6 @@ test('a cash return opens the drawer only when asked, and after the cut', () => 
 
   const notAsked = buildCreditNoteData({ ...CREDIT_NOTE, openDrawer: false }, {}).join('');
   assert.ok(!notAsked.includes(ESC + 'p'), 'openDrawer false keeps it shut');
-});
-
-test('CASH_DRAWER=off keeps the drawer shut on a cash return too', () => {
-  const { buildCreditNoteData } = printerWithDrawer('off');
-  const out = buildCreditNoteData(CREDIT_NOTE, {}).join('');
-  assert.ok(!out.includes(ESC + 'p'));
 });
 
 test('what the API may not have is omitted, not printed empty', () => {

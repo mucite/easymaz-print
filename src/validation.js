@@ -100,6 +100,8 @@ const PrintPayloadSchema = z.object({
     paidByCash: optionalFlag,
     isPaid: optionalFlag,
     isReceiptPrinted: optionalFlag,
+    // The restaurant's Cash drawer setting, sent by the API. Absent is on; only false keeps it shut.
+    cashDrawer: z.boolean().optional(),
 
     // Was an enum of three names, one of which the API no longer has, and it excluded null — which
     // is every unpaid order. The bridge prints this word on a line; it does not authorise anything

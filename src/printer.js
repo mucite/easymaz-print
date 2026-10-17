@@ -47,15 +47,6 @@ const DEFAULT_CUT       = (process.env.PRINTER_CUT || 'full').toLowerCase() === 
 // the code page, and the bridge ignored them. PRINTER_CODEPAGE wins where both are set.
 const DEFAULT_CODE_PAGE = process.env.PRINTER_CODEPAGE || process.env.PRINTER_ENCODING || 'cp437';
 
-/**
- * Whether to fire the cash drawer at the end of a cash sale.
- *
- * On by default, because the drawer is wired into the printer's kick port on every till this is
- * installed on and nothing was ever sending the pulse — so the drawer simply never opened. A site
- * with no drawer sets this to off; a pulse to a port with nothing in it is harmless, but a
- * configurable is cheaper than explaining that.
- */
-const CASH_DRAWER       = (process.env.CASH_DRAWER || 'on').toLowerCase() !== 'off';
 
 /**
  * Named printers, for a site with more than one.
@@ -465,7 +456,10 @@ function buildEscposData(receipt, opts = {}) {
     // And never for a reprint. A DUPLICATE (Art 22(5)(c)) is a copy of a sale whose cash already
     // went into the drawer when the original printed; a customer asking for their receipt again is
     // not a reason to hand the cashier an open till with no money going into it.
-    if (CASH_DRAWER && receipt.paidByCash && receipt.isPaid && receipt.isReceiptPrinted !== true) {
+    //
+    // And not where the restaurant has no drawer: the owner's Cash drawer setting, which the API
+    // sends with every job as cashDrawer. Absent means on, the ordinary till.
+    if (receipt.cashDrawer !== false && receipt.paidByCash && receipt.isPaid && receipt.isReceiptPrinted !== true) {
         lines.push(ESC + "p" + "\x00" + "\x19" + "\xFA");
     }
 
@@ -1298,7 +1292,7 @@ function buildCreditNoteData(note, opts = {}) {
     // Only when the API says so and the money is cash: a mobile-money return has nothing to take out
     // of the drawer, and a cash return the API did not ask to open for (the cashier already paid it
     // out) must not hand anyone an open till.
-    if (CASH_DRAWER && note.openDrawer === true && note.method === 'CASH') {
+    if (note.openDrawer === true && note.method === 'CASH') {
         out.push(ESC + 'p' + '\x00' + '\x19' + '\xFA');
     }
 
@@ -1326,18 +1320,14 @@ module.exports.printCreditNote = printCreditNote;
 
 /**
  * The drawer pulse alone: ESC p, the same pin and timing a cash receipt sends, and nothing else —
- * no paper. For the cashier opening the drawer to count it at the start and end of a shift; the
- * API only asks for it as part of those logged steps. Refused when CASH_DRAWER is off, so a site
- * with no drawer hears that rather than a silent success.
+ * no paper. For the cashier opening the drawer to count it at the start and end of a shift. The
+ * API asks for it only as part of those logged steps, and only where the restaurant has a drawer.
  */
 function buildDrawerPulse() {
     return [ESC + "p" + "\x00" + "\x19" + "\xFA"];
 }
 
 function openDrawer() {
-    if (!CASH_DRAWER) {
-        return Promise.reject(new Error('This register has no cash drawer set up (CASH_DRAWER=off).'));
-    }
     const target = resolveStation();
     const rawBuffer = Buffer.from(buildDrawerPulse().join(''), 'latin1');
     return send(rawBuffer, target);
