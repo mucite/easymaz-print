@@ -130,6 +130,9 @@ const PrintPayloadSchema = z.object({
     // Whether Directive 1142/2026 has commenced for this deployment. Until it has, a slip without an
     // IRN is an ordinary receipt under the rules that apply today, and says nothing about it.
     directiveInForce: optionalFlag,
+    // On an orders-only pilot: every bill is settled on the restaurant's own register, so a slip
+    // printed here always says it is not a fiscal receipt.
+    ordersOnlyPilot: optionalFlag,
 
     // Where the diner's own copy of this receipt lives, encoded into the QR at the foot of the
     // slip. Built by the till from its own origin, because the address it reached this box on is by

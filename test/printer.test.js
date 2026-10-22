@@ -1068,3 +1068,23 @@ test('the drawer pulse is ESC p on pin 0 and nothing else', () => {
   const { buildDrawerPulse } = require('../src/printer');
   assert.deepStrictEqual(buildDrawerPulse(), ['\x1bp\x00\x19\xFA']);
 });
+
+/**
+ * Orders-only pilot: the restaurant's own register issues every receipt, so a slip from Easymaz
+ * says it is not one whatever the directive's calendar, and points the diner at the register.
+ */
+test('a pilot slip says it is not a fiscal receipt even before the directive commences', () => {
+  const { buildEscposData } = freshPrinter();
+  for (const directiveInForce of [undefined, false]) {
+    const out = buildEscposData(fiscalReceipt({ ordersOnlyPilot: true, directiveInForce })).join('');
+    assert.match(out, /NOT A FISCAL RECEIPT/);
+    assert.match(out, /Your receipt is issued at the register/);
+  }
+});
+
+test('a slip outside a pilot is unchanged before the directive commences', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(fiscalReceipt({ ordersOnlyPilot: false })).join('');
+  assert.ok(!/NOT A FISCAL RECEIPT/.test(out));
+  assert.ok(!/issued at the register/.test(out));
+});

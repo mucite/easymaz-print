@@ -728,9 +728,13 @@ function fiscallyRegistered(receipt) {
  * without an IRN is the receipt the current rules ask for, and a notice saying it is "not
  * registered" is noise on every receipt in the country. Strictly true: a payload without the flag
  * comes from a till that does not know, and today that means the directive is not in force.
+ *
+ * And always on an orders-only pilot (ordersOnlyPilot, from the API): the restaurant settles every
+ * bill on its own approved register, so nothing Easymaz prints for it is a receipt, and a slip with a
+ * TIN, a VAT line and a total on it must not pass for one handed over in place of the register's.
  */
 function mustDeclareNotFiscal(receipt) {
-    return receipt.directiveInForce === true
+    return (receipt.directiveInForce === true || receipt.ordersOnlyPilot === true)
         && !fiscallyRegistered(receipt)
         && !awaitingRegistration(receipt);
 }
@@ -743,11 +747,15 @@ function mustDeclareNotFiscal(receipt) {
  * left a slip with a TIN, a VAT line and a total on it looking, to a diner or an inspector, exactly
  * like the receipt Art 4(1)(c) says only a registered sale may produce.
  */
-function notFiscalLines(centerLines) {
+function notFiscalLines(centerLines, receipt) {
     const out = [ESC + 'a' + '\x01', ESC + 'E' + '\x01'];
     centerLines('NOT A FISCAL RECEIPT').forEach(l => out.push(l));
     out.push(ESC + 'E' + '\x00');
     centerLines('Not registered with the Revenue Authority').forEach(l => out.push(l));
+    // Sends the diner to the paper that is the receipt, so asking for it is the natural next step
+    if (receipt && receipt.ordersOnlyPilot === true) {
+        centerLines('Your receipt is issued at the register').forEach(l => out.push(l));
+    }
     return out;
 }
 
@@ -788,7 +796,7 @@ function statusBanners(receipt, centerLines, opts = {}) {
     if (receipt.isReceiptPrinted === true) bold('DUPLICATE');
     if (bill && receipt.isPaid === false) bold('BILL - NOT A RECEIPT');
     if (fiscal && mustDeclareNotFiscal(receipt)) {
-        notFiscalLines(centerLines).forEach(l => out.push(l));
+        notFiscalLines(centerLines, receipt).forEach(l => out.push(l));
     }
 
     if (out.length) out.unshift('\n');
@@ -841,7 +849,7 @@ function fiscalLines(receipt, centerLines, formatInfoLine) {
         out.push(ESC + 'a' + '\x00');
     } else if (mustDeclareNotFiscal(receipt)) {
         out.push('\n');
-        notFiscalLines(centerLines).forEach(l => out.push(l));
+        notFiscalLines(centerLines, receipt).forEach(l => out.push(l));
         out.push(ESC + 'a' + '\x00');
     }
 
