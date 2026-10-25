@@ -133,6 +133,8 @@ const PrintPayloadSchema = z.object({
     // On an orders-only pilot: every bill is settled on the restaurant's own register, so a slip
     // printed here always says it is not a fiscal receipt.
     ordersOnlyPilot: optionalFlag,
+    // On a pilot: how the diner paid at the restaurant's own register, CASH or MOBILE.
+    pilotPaidWith: optionalText,
 
     // Where the diner's own copy of this receipt lives, encoded into the QR at the foot of the
     // slip. Built by the till from its own origin, because the address it reached this box on is by

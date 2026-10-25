@@ -855,6 +855,17 @@ test('a fee of zero prints no line at all', () => {
   assert.doesNotMatch(out, /CONVENIENCE FEE/);
 });
 
+test('a pilot bill paid on the restaurant register says how, not "cash unpaid"', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(
+    { ...CASH_SALE, isPaid: false, ordersOnlyPilot: true, pilotPaidWith: 'MOBILE' },
+    {}
+  ).join('');
+
+  assert.match(out, /PAID AT REGISTER - MOBILE/);
+  assert.doesNotMatch(out, /AMOUNT DUE/);
+});
+
 test('an unpaid bill says what is owed and commits to no method', () => {
   const { buildEscposData } = freshPrinter();
   const out = buildEscposData({ ...CASH_SALE, isPaid: false }, {}).join('');

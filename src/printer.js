@@ -919,6 +919,11 @@ const WALLET_NAMES = {
 
 /** [label, amount] pairs for the payment block. See the comment where it is printed. */
 function paymentLines(receipt, total) {
+    // A pilot's bill is paid on the restaurant's own register; this says how, and nothing more.
+    const pilot = String(receipt.pilotPaidWith || "").toUpperCase();
+    if (pilot === "CASH" || pilot === "MOBILE") {
+        return [[pilot === "CASH" ? "PAID AT REGISTER - CASH" : "PAID AT REGISTER - MOBILE", total]];
+    }
     if (receipt.isPaid === false) {
         return [["AMOUNT DUE", total]];
     }
