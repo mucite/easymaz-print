@@ -94,9 +94,9 @@ const PrintPayloadSchema = z.object({
 
     total: z.number().nonnegative('Total must be >= 0'),
 
-    // Absent means no, which is what an order that has never been paid or printed actually looks
-    // like coming out of Mongo. Requiring the field meant a boolean that was simply never written
-    // failed the schema, and the till was told the printer had a problem.
+    // Absent means no, which is what an order that has never been paid or printed looks like on
+    // the wire. Requiring the field meant a boolean that was simply never written failed the
+    // schema, and the till was told the printer had a problem.
     paidByCash: optionalFlag,
     isPaid: optionalFlag,
     isReceiptPrinted: optionalFlag,
