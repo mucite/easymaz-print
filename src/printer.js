@@ -920,9 +920,12 @@ const WALLET_NAMES = {
 /** [label, amount] pairs for the payment block. See the comment where it is printed. */
 function paymentLines(receipt, total) {
     // A pilot's bill is paid on the restaurant's own register; this says how, and nothing more.
+    // CARD is one of them: the register next door is a bank's POS terminal and takes a foreign
+    // Visa, which this software cannot run at a counter at all.
     const pilot = String(receipt.pilotPaidWith || "").toUpperCase();
-    if (pilot === "CASH" || pilot === "MOBILE") {
-        return [[pilot === "CASH" ? "PAID AT REGISTER - CASH" : "PAID AT REGISTER - MOBILE", total]];
+    const nextDoor = { CASH: "CASH", MOBILE: "MOBILE", CARD: "CARD" }[pilot];
+    if (nextDoor) {
+        return [[`PAID AT REGISTER - ${nextDoor}`, total]];
     }
     if (receipt.isPaid === false) {
         return [["AMOUNT DUE", total]];
@@ -938,7 +941,13 @@ function paymentLines(receipt, total) {
         return out;
     }
     if (!method) return [];
-    const wallet = WALLET_NAMES[String(receipt.paymentWallet || "").toLowerCase()];
+    // Chapa settles cards as well as wallets, so a foreign Visa printed as MOBILE MONEY on the
+    // diner's slip. A card gets its own line.
+    const paidWith = String(receipt.paymentWallet || "").toLowerCase();
+    if (paidWith === "card") {
+        return [["CARD", total]];
+    }
+    const wallet = WALLET_NAMES[paidWith];
     return [[wallet ? `MOBILE MONEY ${wallet}` : "MOBILE MONEY", total]];
 }
 

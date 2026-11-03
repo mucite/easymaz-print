@@ -882,6 +882,29 @@ test('a cash receipt shows the cash received and the change', () => {
   assert.match(out, /CHANGE\s+50/);
 });
 
+test('a card is printed as a card, not as mobile money', () => {
+    const { buildEscposData } = freshPrinter();
+    // Chapa settles foreign Visa and Mastercard as well as wallets, and both arrive as CHAPA.
+    const out = buildEscposData(
+        { ...CASH_SALE, paidByCash: false, isPaid: true, paymentMethod: 'CHAPA', paymentWallet: 'CARD' },
+        {}
+    ).join('');
+
+    assert.match(out, /CARD/);
+    assert.doesNotMatch(out, /MOBILE MONEY/);
+});
+
+test('a pilot bill paid by card at the terminal next door says so', () => {
+    const { buildEscposData } = freshPrinter();
+    const out = buildEscposData(
+        { ...CASH_SALE, isPaid: false, ordersOnlyPilot: true, pilotPaidWith: 'CARD' },
+        {}
+    ).join('');
+
+    assert.match(out, /PAID AT REGISTER - CARD/);
+    assert.doesNotMatch(out, /AMOUNT DUE/);
+});
+
 test('mobile money names the wallet, never the gateway', () => {
   const { buildEscposData } = freshPrinter();
   const out = buildEscposData(
