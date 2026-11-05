@@ -90,6 +90,8 @@ const PrintPayloadSchema = z.object({
     vatPercentage: z.number().nonnegative('VAT percentage must be >= 0'),
 
     serviceChargePercentage: z.number().nonnegative().optional(),
+    /** VAT_INCLUSIVE or VAT_EXCLUSIVE; absent reads as inclusive. */
+    menuPricing: z.enum(['VAT_INCLUSIVE', 'VAT_EXCLUSIVE']).optional(),
     convenienceFee: z.number().nonnegative().optional(),
 
     total: z.number().nonnegative('Total must be >= 0'),

@@ -315,12 +315,16 @@ function buildEscposData(receipt, opts = {}) {
     };
 
     // ---------- TOTALS ----------
-    // As the admin worked them out (dinerFigures): menu prices include VAT, so the items add up to
+    // As the admin worked them out (dinerFigures). Where the menu includes VAT the items add up to
     // the subtotal, the service charge is added with its VAT, and the VAT and the amount before it
-    // are printed under the total as included in it.
+    // print under the total as included in it. Where the menu excludes VAT the lines are net and
+    // the VAT is its own row above the total, under the amount it was worked out from — the order
+    // the registers around us print.
     const items = receipt.items || [];
     const svcPct = Number(receipt.serviceChargePercentage || 0);
     const vatPct = Number(receipt.vatPercentage || 0);
+    // Absent reads as inclusive: every restaurant printing before this question existed was.
+    const inclusive = receipt.menuPricing !== "VAT_EXCLUSIVE";
 
     // Mobile money only; prints only when non-zero.
     const convenienceFee = Number(receipt.convenienceFee || 0);
@@ -391,6 +395,11 @@ function buildEscposData(receipt, opts = {}) {
         lines.push(formatTotalLine(lbl, receipt.serviceCharge));
     }
 
+    if (!inclusive && receipt.vatRegistrationNumber) {
+        lines.push(formatTotalLine("TAXABLE AMOUNT", receipt.taxableAmount));
+        lines.push(formatTotalLine(vatPct ? `VAT ${vatPct}%` : "VAT", receipt.vat));
+    }
+
     if (convenienceFee) {
         lines.push(formatTotalLine("CONVENIENCE FEE", convenienceFee));
     }
@@ -404,7 +413,7 @@ function buildEscposData(receipt, opts = {}) {
     // Included in the total, not added to it.
     // On every receipt from a VAT-registered restaurant, 0 included; never on one without a VAT
     // number, which charges no VAT. The credit note follows the same rule.
-    if (receipt.vatRegistrationNumber) {
+    if (inclusive && receipt.vatRegistrationNumber) {
         lines.push(formatTotalLine("BEFORE VAT", receipt.taxableAmount));
         lines.push(formatTotalLine(vatPct ? `VAT ${vatPct}% INCL` : "VAT INCL", receipt.vat));
     }

@@ -936,6 +936,33 @@ test('menu prices include VAT: it prints under the total, as included, never add
   assert.ok(out.indexOf('TOTAL') < out.indexOf('VAT 15% INCL'), 'under the total, not above it');
 });
 
+test('an exclusive menu prints the VAT above the total, as the registers next door do', () => {
+  const { buildEscposData } = freshPrinter();
+  // Their slip: 759.00 of net prices, 75.91 service, 834.91 taxable, 125.24 VAT, 960.15 paid.
+  const out = buildEscposData(
+    {
+      ...CASH_SALE,
+      menuPricing: 'VAT_EXCLUSIVE',
+      vatRegistrationNumber: 'VAT-0001',
+      subtotal: 759,
+      serviceCharge: 75.91,
+      serviceChargePercentage: 10,
+      taxableAmount: 834.91,
+      vat: 125.24,
+      vatPercentage: 15,
+      total: 960.15
+    },
+    {}
+  ).join('');
+
+  assert.ok(out.includes('TAXABLE AMOUNT'), 'the amount the VAT is taken on is shown');
+  assert.ok(out.includes('VAT 15%'), 'the VAT is a line of its own');
+  assert.ok(!out.includes('VAT 15% INCL'), 'and never says it was already included');
+  assert.ok(!out.includes('BEFORE VAT'), 'nor prints the inclusive note');
+  // lastIndexOf: "TOTAL" is also the items column header and the tail of "SUBTOTAL".
+  assert.ok(out.indexOf('VAT 15%') < out.lastIndexOf('TOTAL'), 'above the total, not under it');
+});
+
 test('a VAT-registered restaurant prints its VAT lines on every receipt, even at 0', () => {
   const { buildEscposData } = freshPrinter();
   const out = buildEscposData(
