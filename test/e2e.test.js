@@ -925,3 +925,149 @@ describe('a credit note on /print', () => {
     assert.doesNotMatch(slip, /CREDIT NOTE/);
   });
 });
+
+/**
+ * A printer that is on the same fixed port each time, so a printer can be switched off and back on
+ * the way it is in a restaurant: same cable, same address, nothing reconfigured.
+ *
+ * {@link fakePrinter} takes whatever port the operating system hands it, which cannot model a
+ * printer coming back — and coming back is the whole question for a receipt that failed.
+ */
+function fakePrinterOn(port, { jams = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const streams = [];
+    const server = net.createServer((sock) => {
+      const chunks = [];
+      sock.on('data', (d) => {
+        chunks.push(d);
+        // The head jams, the paper runs out on a printer that notices, somebody pulls the cable:
+        // the connection dies with bytes still to come. The bridge must hear that as a failure.
+        if (jams) sock.resetAndDestroy();
+      });
+      sock.on('close', () => streams.push(Buffer.concat(chunks)));
+      sock.on('error', () => {});
+    });
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () =>
+      resolve({
+        streams,
+        reset: () => (streams.length = 0),
+        close: () => new Promise((r) => server.close(r))
+      })
+    );
+  });
+}
+
+/**
+ * The register printer failing with a sale already taken.
+ *
+ * The money has changed hands by the time any of this runs: the API settled the payment, issued the
+ * invoice number and only then asked for paper. So a printer fault here can cost a slip, and must
+ * cost nothing else — the sale is not undone, the till is not left waiting on a socket, and the
+ * cashier is told which of the two it is, because "the printer is off" and "this receipt is wrong"
+ * have different cures.
+ *
+ * The one rule a retry must not break: a jobId the bridge has actually printed never prints again.
+ * A fiscal document that comes out twice from one sale is two documents for one sale, and the
+ * second is indistinguishable from the first on the paper.
+ */
+describe('a register printer that fails with the money already taken', () => {
+  let port, register, bridge;
+
+  const SALE = { ...RECEIPT, paidByCash: true, isPaid: true, isReceiptPrinted: false };
+
+  before(async () => {
+    port = await freePort();
+    register = await fakePrinterOn(port);
+    bridge = await startBridge({
+      PRINT_SHARED_SECRET: KEY,
+      PRINTER_HOST: '127.0.0.1',
+      PRINTER_PORT: String(port)
+    });
+  });
+
+  after(async () => {
+    await bridge?.stop();
+    await register?.close();
+  });
+
+  test('a printer that is not there is reported as that, not as a printed receipt', async () => {
+    await register.close();
+
+    const res = await bridge.post('/print', { ...SALE, jobId: 'fault-off' });
+
+    assert.strictEqual(res.status, 502, JSON.stringify(res.body));
+    assert.strictEqual(res.body.success, false);
+    // The address is in the reason: half the time it is the answer.
+    assert.match(String(res.body.error), new RegExp(String(port)));
+  });
+
+  test('the receipt is still owed: the same job prints once the printer is back on', async () => {
+    register = await fakePrinterOn(port);
+
+    const res = await bridge.post('/print', { ...SALE, jobId: 'fault-off' });
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.notStrictEqual(
+      res.body.message,
+      'duplicate, already printed',
+      'a receipt that never printed was remembered as printed'
+    );
+    assert.ok(await settled(register), 'nothing reached the revived printer');
+    assert.match(paper(register), /0012345678/);
+  });
+
+  test('the drawer opened once for that sale, and the retry of a printed job opens nothing', async () => {
+    const DRAWER = '\x1bp\x00\x19\xfa';
+    const first = register.streams[0].toString('latin1');
+    assert.ok(first.includes(DRAWER), 'the cash drawer never opened for a paid cash sale');
+
+    const again = await bridge.post('/print', { ...SALE, jobId: 'fault-off' });
+
+    assert.strictEqual(again.status, 200, JSON.stringify(again.body));
+    assert.strictEqual(again.body.message, 'duplicate, already printed');
+    assert.ok(
+      await stayedEmptyBeyond(register, 1),
+      'the same job printed a second fiscal document, and opened the drawer again'
+    );
+  });
+
+  test('a printer that dies mid-receipt says so, and is not remembered as printed', async () => {
+    await register.close();
+    const jammed = await fakePrinterOn(port, { jams: true });
+
+    const res = await bridge.post('/print', { ...SALE, jobId: 'fault-jam' });
+
+    assert.strictEqual(res.status, 502, JSON.stringify(res.body));
+    assert.strictEqual(res.body.success, false);
+    await jammed.close();
+
+    register = await fakePrinterOn(port);
+    const retry = await bridge.post('/print', { ...SALE, jobId: 'fault-jam' });
+
+    assert.strictEqual(retry.status, 200, JSON.stringify(retry.body));
+    assert.notStrictEqual(
+      retry.body.message,
+      'duplicate, already printed',
+      'a receipt torn off half-printed was remembered as printed'
+    );
+    assert.ok(await settled(register), 'the retry after a jam reached nothing');
+  });
+
+  test('the drawer on its own answers for itself when there is no printer to kick it', async () => {
+    await register.close();
+
+    const res = await bridge.post('/drawer', {});
+
+    assert.strictEqual(res.status, 502, JSON.stringify(res.body));
+    assert.strictEqual(res.body.success, false);
+
+    register = await fakePrinterOn(port);
+  });
+});
+
+/** Nothing further arrives beyond the streams already counted, and we waited long enough to mean it. */
+async function stayedEmptyBeyond(printer, count, ms = 600) {
+  await new Promise((r) => setTimeout(r, ms));
+  return printer.streams.length === count;
+}
