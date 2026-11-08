@@ -166,6 +166,12 @@ how you confirm it took.
 | `POST /test-print` | yes | The slip above. Not deduplicated. |
 | `POST /print` | yes | A fiscal receipt: TIN, premises, items, VAT breakdown, total. |
 | `POST /ticket` | yes | A production ticket: station, table, items with remarks, reprint and order note. No money on it. |
+| `POST /drawer` | yes | Opens the cash drawer with no sale behind it, for a float or a correction. Takes `jobId`, `reason` and `openedBy`, deduplicated on the `jobId` like a receipt, and logged — it is the one route here that moves money rather than paper. |
 
 The shared secret is the only thing between this bridge and anyone who can reach it. There is no
 TLS: it is built to listen on a private network, not to be exposed beyond one.
+
+Text in a payload is data and never reaches the printer as a command: control bytes in an item name,
+an order note, a buyer's name or a credit note's reason are replaced with spaces on the way into a
+line, and each field is capped. A dish name holding `ESC p` would otherwise have opened the drawer
+from the dining room.

@@ -191,6 +191,26 @@ const TicketPayloadSchema = z.object({
     items: z.array(TicketItemSchema).min(1, 'A ticket with no items is not worth printing')
 });
 
+/**
+ * Opening the cash drawer with no sale behind it.
+ *
+ * The till legitimately needs this — a float counted in at the start of a shift, a miscount
+ * corrected — so the route stays. What it had behind it was nothing at all: an empty POST carrying
+ * the shared key opened the drawer, which is the one thing on this box that moves money and the one
+ * job that left no record of who asked or why. A drawer that opens on request and records nothing is
+ * an accounting hole wide enough to walk cash out of.
+ *
+ * So the body names a reason and a person, and carries a jobId like every other job here, so a relay
+ * retrying a slow request opens the drawer once rather than twice. None of it is printed — there is
+ * no paper — it goes in the log beside the pulse, which is where somebody reconciling a short till
+ * has to be able to look.
+ */
+const DrawerPayloadSchema = z.object({
+    jobId: z.string().min(1, 'jobId is required'),
+    reason: z.string().trim().min(1, 'A reason is required'),
+    openedBy: z.string().trim().min(1, 'Who is opening the drawer is required')
+});
+
 /** A test slip: which station, and optionally where its printer is. Both may be absent. */
 const TestPrintSchema = z.object({
     station: optionalText,
@@ -260,6 +280,7 @@ const CreditNotePayloadSchema = z.object({
 
 module.exports = {
     CreditNotePayloadSchema,
+    DrawerPayloadSchema,
     PrintPayloadSchema,
     TicketPayloadSchema,
     TestPrintSchema,

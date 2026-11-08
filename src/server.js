@@ -1,9 +1,11 @@
 require('dotenv').config();
 const express = require('express');
 const http    = require('http');
+const crypto  = require('crypto');
 const { printReceipt, printCreditNote, printTicket, printTestPage, openDrawer, stations, registerConfigured, defaultPrinterStatus } = require('./printer');
+const { toField } = require('./charset');
 const { networkPrinter } = require('./discovery');
-const { PrintPayloadSchema, CreditNotePayloadSchema, TicketPayloadSchema, TestPrintSchema } = require('./validation');
+const { PrintPayloadSchema, CreditNotePayloadSchema, TicketPayloadSchema, TestPrintSchema, DrawerPayloadSchema } = require('./validation');
 
 const app  = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -40,6 +42,24 @@ if (!PRINT_KEY) {
 }
 
 /**
+ * The presented key against the configured one, without telling the caller how far they got.
+ *
+ * `!==` on two strings stops at the first byte that differs, so a caller on the restaurant's network
+ * can time a few thousand requests and read the secret out of the bridge one character at a time —
+ * the whole point of the secret being that only the API holds it.
+ *
+ * Both sides are hashed before they are compared because timingSafeEqual refuses buffers of
+ * different lengths, and checking the length first to avoid that would hand back the one fact the
+ * comparison was meant to hide. A digest is always 32 bytes, so a key of the wrong length takes the
+ * same path and the same time as a key of the right length with the wrong contents.
+ */
+function keyAccepted(presented) {
+  const offered = crypto.createHash('sha256').update(String(presented == null ? '' : presented)).digest();
+  const expected = crypto.createHash('sha256').update(PRINT_KEY).digest();
+  return crypto.timingSafeEqual(offered, expected);
+}
+
+/**
  * Print jobs must carry the secret; /health need not.
  *
  * Health is how an engineer on the phone checks whether a printer is configured at all, and it
@@ -59,7 +79,7 @@ app.use((req, res, next) => {
     });
   }
   const presented = req.headers['x-print-key'];
-  if (presented !== PRINT_KEY) {
+  if (!keyAccepted(presented)) {
     console.warn(`Refused a print job with %s key from %s`,
       presented ? 'the wrong' : 'no', req.ip);
     return res.status(401).json({ success: false, errors: ['Not authorised to print here.'] });
@@ -237,18 +257,6 @@ app.post('/print', async (req, res) => {
  * Not deduplicated, deliberately. The jobId window exists so a till's retry does not cook the food
  * twice; somebody testing a printer presses this repeatedly and means it every time.
  */
-// The cash drawer, opened on its own for a shift's count. Behind the same print key as every job.
-app.post('/drawer', async (req, res) => {
-  try {
-    await openDrawer();
-    console.log('[drawer] opened');
-    return res.json({ success: true });
-  } catch (err) {
-    console.error(`[drawer] ${err.message}`);
-    return res.status(502).json({ success: false, error: err.message });
-  }
-});
-
 app.post('/test-print', async (req, res) => {
   const parsed = TestPrintSchema.safeParse({
     station: (req.body && req.body.station) || req.query.station,
@@ -272,6 +280,48 @@ app.post('/test-print', async (req, res) => {
     // bridge is fine and is talking to a printer that is off, or at an address nobody has moved
     // since it was typed in.
     console.error(`[test-print] ${err.message}`);
+    return res.status(502).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * The cash drawer, opened on its own for a shift's count.
+ *
+ * Behind the same print key as every job, and behind a body as well. The key says the request came
+ * from the API; it says nothing about why the till is opening with no sale behind it, and this is
+ * the only route here that moves money rather than paper. So the API has to name the reason and the
+ * person, and the pair goes to the log where somebody reconciling a short drawer can find it.
+ *
+ * Deduplicated like a receipt, and for a sharper reason than a receipt has: a relay retrying a
+ * request that was slow rather than refused would open the drawer a second time, with a different
+ * person possibly standing at it.
+ */
+app.post('/drawer', async (req, res) => {
+  const parsed = DrawerPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const errors = parsed.error.issues.map(issue => {
+      const path = issue.path.join('.');
+      return path ? `${path}: ${issue.message}` : issue.message;
+    });
+    return res.status(400).json({ success: false, errors });
+  }
+
+  const { jobId, reason, openedBy } = parsed.data;
+
+  if (isDuplicate(jobId)) {
+    console.log(`[dedup] Skipping duplicate drawer open ${jobId}`);
+    return res.json({ success: true, message: 'duplicate, already opened' });
+  }
+
+  try {
+    await openDrawer();
+    markPrinted(jobId);
+    // Through the same filter the paper goes through. A reason is free text typed by somebody, and a
+    // log line is read in a terminal that obeys escape sequences much as a printer does.
+    console.log(`[drawer] opened for ${toField(reason, 80)} by ${toField(openedBy, 40)} (job ${toField(jobId, 64)})`);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error(`[drawer] ${err.message}`);
     return res.status(502).json({ success: false, error: err.message });
   }
 });

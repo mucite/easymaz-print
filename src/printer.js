@@ -1,7 +1,7 @@
 const net    = require('net');
 const fs     = require('fs');
 const { spawn } = require('child_process');
-const { codePageByte, toPrintable } = require('./charset');
+const { codePageByte, toPrintable, toField } = require('./charset');
 const discovery = require('./discovery');
 
 // Mac/Linux CUPS:  PRINTER_CMD=lp -d "TM-T88V" -o raw -
@@ -237,8 +237,12 @@ function buildEscposData(receipt, opts = {}) {
     const fmt = money;
     const repeat = (ch, n) => ch.repeat(Math.max(0, n));
 
+    // Every piece of caller text on a receipt reaches the paper through one of the four helpers
+    // below, so toField sits in them rather than at the forty places a field is interpolated. The
+    // ESC and GS sequences this function pushes straight into `lines` never pass through here, which
+    // is the whole point of the seam: the layout keeps its commands, the data cannot bring its own.
     const wrapText = (text) => {
-        const words = String(text || '').split(/\s+/);
+        const words = toField(text).split(/\s+/);
         const res = [];
         let line = '';
         for (const word of words) {
@@ -262,7 +266,7 @@ function buildEscposData(receipt, opts = {}) {
         const left = (label + " : ");
         // Zero is a value, not an absence: `value || ""` printed the line with the number
         // missing.
-        const val = value === null || value === undefined ? "" : String(value);
+        const val = toField(value);
         const spaces = Math.max(1, LINE_WIDTH - left.length - val.length);
         return left + " ".repeat(spaces) + val + "\n";
     };
@@ -302,7 +306,7 @@ function buildEscposData(receipt, opts = {}) {
     };
 
     const formatTotalLine = (label, amount) => {
-        const l = String(label);
+        const l = toField(label);
         const n = Number(amount);
 
         if (!Number.isFinite(n)) {
@@ -656,6 +660,9 @@ function defaultPrinterStatus() {
 const ESC = '\x1B';
 const GS = '\x1D';
 
+/** What a model 2 code at error correction M holds in byte mode, which is where these payloads sit. */
+const QR_MAX_PAYLOAD = 2331;
+
 /**
  * The Authority's QR code, in the printer's own hardware encoder.
  *
@@ -679,15 +686,31 @@ function qrLines(payload, moduleSize = 6) {
     const data = String(payload || '');
     if (!data) return [];
 
+    // Too long to be a QR code, and worse than that, too long to be described as one. pL pH is a
+    // sixteen-bit length, so a payload of 65533 characters and up wrapped it and the printer read the
+    // payload itself as the commands following a much shorter code — a receipt's URL deciding what
+    // the till does next. The ceiling below is the real one rather than the arithmetic one: a model 2
+    // code at error correction M holds 2331 bytes and the printer would reject anything past that
+    // anyway, so nothing between the two limits can ever have been encodable.
+    //
+    // Printed as a line of text instead of truncated. A fiscal QR cut short still scans, to something
+    // the Authority never issued, and a code that scans to the wrong sale is worse than no code.
+    if (data.length > QR_MAX_PAYLOAD) {
+        return ['QR: ' + toField(data) + '\n'];
+    }
+
     // eslint-disable-next-line no-control-regex
     if (/[^\x20-\x7E]/.test(data)) {
-        return ['QR: ' + data + '\n'];
+        // toField, not the payload as it arrived: this branch is reached by anything outside printable
+        // ASCII, which includes ESC and GS, and a line of text is exactly where those would be obeyed.
+        return ['QR: ' + toField(data) + '\n'];
     }
 
     const GS_K = GS + '(' + 'k';
     const size = Math.min(16, Math.max(1, Number(moduleSize) || 6));
 
-    // Store: pL pH are the length of (payload + the three bytes 49 80 48) in little-endian.
+    // Store: pL pH are the length of (payload + the three bytes 49 80 48) in little-endian. The
+    // guard above is what makes the two masks below an encoding rather than a truncation.
     const storeLength = data.length + 3;
     const pL = String.fromCharCode(storeLength & 0xFF);
     const pH = String.fromCharCode((storeLength >> 8) & 0xFF);
@@ -1029,9 +1052,16 @@ function buildTicketData(ticket, opts = {}) {
     const inverted = (on) => out.push(GS + 'B' + (on ? '\x01' : '\x00'));
     const line = (s) => out.push(s + '\n');
 
-    /** As it will reach the paper: transliterated, single-spaced, trimmed. */
-    const text = (value) =>
-        value === null || value === undefined ? '' : toPrintable(value).replace(/\s+/g, ' ').trim();
+    /**
+     * As it will reach the paper: transliterated, stripped of control bytes, single-spaced, trimmed.
+     *
+     * Every caller value on a ticket is measured and laid out through here, so this is the seam
+     * where a dish name carrying ESC p or GS V loses it — the bar and the size changes this builder
+     * emits are pushed straight into `out` and are untouched. toField comes after toPrintable so the
+     * length cap counts the characters that are actually printed: transliterated Ethiopic is longer
+     * than what was typed, and it is the paper the cap is protecting.
+     */
+    const text = (value) => toField(toPrintable(value)).replace(/\s+/g, ' ').trim();
 
     /** Words onto lines of `width`; a word longer than a line is broken rather than overflowing. */
     const wrap = (value, width) => {
@@ -1210,11 +1240,14 @@ function buildCreditNoteData(note, opts = {}) {
     const rule = () => out.push('-'.repeat(LINE_WIDTH) + '\n');
 
     // Word wrap at the paper's width, as the receipt does, so a long address or reason breaks between
-    // words instead of wherever the printer runs out of columns.
+    // words instead of wherever the printer runs out of columns. It is also the same seam the receipt
+    // filters on: the restaurant's name, the reason a customer gave and the names of the lines going
+    // back all arrive through wrap or info and lose their control bytes there, while the ESC and GS
+    // this builder pushes into `out` itself go nowhere near either.
     const wrap = (text, width = LINE_WIDTH) => {
         const res = [];
         let line = '';
-        for (const word of String(text || '').split(/\s+/)) {
+        for (const word of toField(text).split(/\s+/)) {
             if (!word) continue;
             const test = line ? line + ' ' + word : word;
             if (test.length > width && line) {
@@ -1232,7 +1265,7 @@ function buildCreditNoteData(note, opts = {}) {
     // Label and value at opposite edges — the receipt's "Order :      002" line.
     const info = (label, value) => {
         const l = label + ' : ';
-        const v = String(value);
+        const v = toField(value);
         out.push(l + ' '.repeat(Math.max(1, LINE_WIDTH - l.length - v.length)) + v + '\n');
     };
     // Text on the left, an amount right-aligned. A name too long for the space left by the amount
@@ -1419,7 +1452,9 @@ function buildTestPage(info, opts = {}) {
     const bold = (on) => out.push(ESC + 'E' + (on ? '\x01' : '\x00'));
     const big = (on) => out.push(GS + '!' + (on ? '\x11' : '\x00'));
     const rule = () => out.push('-'.repeat(LINE_WIDTH) + '\n');
-    const field = (label, value) => out.push(label.padEnd(10) + String(value) + '\n');
+    // The station is the one line on this slip that came from a request body, so it goes through the
+    // same filter the receipt's fields do rather than being trusted for being a diagnostic.
+    const field = (label, value) => out.push(label.padEnd(10) + toField(value) + '\n');
 
     out.push(ESC + '@' + ESC + 't' + String.fromCharCode(CODE_PAGE));
 

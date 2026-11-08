@@ -1149,3 +1149,146 @@ test('a slip outside a pilot is unchanged before the directive commences', () =>
   assert.ok(!/NOT A FISCAL RECEIPT/.test(out));
   assert.ok(!/issued at the register/.test(out));
 });
+
+/**
+ * Text that arrives from outside the bridge is data, and nothing a person typed may become a
+ * command.
+ *
+ * Every slip here is assembled as one string and handed to the printer as raw bytes, so until this
+ * was filtered a dish name holding ESC p opened the cash drawer, one holding GS V cut the paper in
+ * the middle of the sale, and one holding GS ! left the rest of the receipt printing in whatever
+ * type the name asked for. A menu item name and an order note are typed by staff, and a note can
+ * start life on a diner's phone, so none of this needs anyone to touch the box.
+ *
+ * The slip has to survive as well as refuse: a name that tried something still prints as the name,
+ * on its own line, in its own columns.
+ */
+
+const KICK = ESC + 'p' + '\x00' + '\x19' + '\xFA';
+const BILL = { ...CASH_SALE, paidByCash: false, isPaid: false, paymentMethod: undefined };
+
+test('an item name carrying the drawer kick prints as text and opens nothing', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData({ ...BILL, items: [{ name: 'Tibs' + KICK, quantity: 1, price: 120 }] }).join('');
+
+  assert.ok(!out.includes(KICK), 'an item name opened the cash drawer');
+  assert.ok(!out.includes(ESC + 'p'), 'ESC p reached the printer from an item name');
+  assert.match(out, /Tibs/, 'the name was dropped along with the attack');
+  assert.match(out, /Tibs.* +1 +120 +120\n/, 'the item line lost its columns');
+});
+
+test('a name carrying GS V does not cut the paper in the middle of the sale', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData({ ...BILL, items: [{ name: 'Tej' + GS + 'V' + '\x00', quantity: 1, price: 80 }] }).join('');
+
+  assert.strictEqual(count(out, GS + 'V'), 1, 'more than one cut was sent');
+  // The one that is left is the builder's own, after the feed at the end of the slip.
+  assert.ok(out.endsWith(GS + 'V' + '\x00'), 'the cut is no longer the last thing on the slip');
+});
+
+test('a name cannot switch the type the rest of the slip prints in', () => {
+  const { buildEscposData } = freshPrinter();
+  const name = 'Shiro' + GS + '!' + '\x11' + ESC + '!' + '\x38';
+  const out = buildEscposData({ ...BILL, items: [{ name, quantity: 1, price: 90 }] }).join('');
+
+  // A receipt is laid out in one size throughout, so this builder emits neither command at all.
+  assert.ok(!out.includes(GS + '!'), 'GS ! reached the printer from an item name');
+  assert.ok(!out.includes(ESC + '!'), 'ESC ! reached the printer from an item name');
+  assert.match(out, /Shiro/);
+});
+
+test('a field with newlines in it stays on the line the layout gave it', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData({ ...BILL, cashier: 'Sara\nTOTAL   9999\n' }).join('');
+
+  assert.match(out, /Cashier : +Sara TOTAL   9999 \n/, 'the cashier line was split into forged rows');
+  assert.ok(!/\nTOTAL   9999/.test(out), 'a field invented a line of its own');
+});
+
+test('one field cannot consume the roll', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData({
+    ...BILL,
+    businessName: 'Q'.repeat(400),
+    cashier: 'x'.repeat(400)
+  }).join('');
+
+  assert.ok(out.includes('Q'.repeat(120) + '\n'), 'the business name was not capped at a field');
+  assert.ok(!out.includes('Q'.repeat(121)), 'the business name ran past the cap');
+  assert.ok(out.includes('x'.repeat(120)), 'the cashier was not capped at a field');
+  assert.ok(!out.includes('x'.repeat(121)), 'the cashier ran past the cap');
+});
+
+test('a credit note reason cannot open the drawer a mobile-money return never opens', () => {
+  const { buildCreditNoteData } = freshPrinter();
+  const out = buildCreditNoteData({
+    ...CREDIT_NOTE,
+    method: 'CHAPA',
+    openDrawer: false,
+    reason: 'Cold' + KICK,
+    issuedBy: 'Sara' + GS + 'V' + '\x00'
+  }, {}).join('');
+
+  assert.ok(!out.includes(ESC + 'p'), 'a reason opened the cash drawer');
+  assert.strictEqual(count(out, GS + 'V'), 1, 'the name of whoever issued it cut the paper');
+  assert.match(out, /Reason: Cold/);
+});
+
+test('a dish name on a kitchen ticket is data too', () => {
+  const { buildTicketData } = freshPrinter();
+  const out = buildTicketData({
+    ...LUNCH,
+    items: [{ name: 'Doro Wat' + KICK, quantity: 1, note: 'mild' + GS + 'B' + '\x01' }]
+  }, {}).join('');
+
+  assert.ok(!out.includes(ESC + 'p'), 'a dish name opened the cash drawer at the kitchen printer');
+  assert.strictEqual(count(out, GS + 'V'), 1, 'a dish name cut the ticket');
+  // GS B is the station and REPRINT bars: on and off, twice each for the one bar this ticket has.
+  assert.strictEqual(count(out, GS + 'B' + '\x01'), count(out, GS + 'B' + '\x00'), 'a note left the printer inverted');
+  assert.match(out, /Doro Wat/);
+});
+
+/**
+ * The QR, where the payload carries its own length.
+ *
+ * GS ( k is pL pH and then that many bytes, so the length prefix is the one place on a slip where a
+ * long field stops being a long field: at 65533 characters the prefix wrapped, the printer took the
+ * tail of the payload as the commands following a much shorter code, and a receipt's URL decided what
+ * the till did next. The ceiling is the code's own capacity rather than the arithmetic one, because
+ * nothing between the two was ever encodable.
+ */
+const QR_LIMIT = 2331;
+
+test('a QR payload at the limit is encoded, with a length prefix that did not wrap', () => {
+  const { buildEscposData } = freshPrinter();
+  const payload = 'X'.repeat(QR_LIMIT);
+  const out = buildEscposData(fiscalReceipt({ irn: 'IRN-1', fiscalQr: payload })).join('');
+
+  const stored = QR_LIMIT + 3;
+  const prefix = GS + '(k' + String.fromCharCode(stored & 0xFF) + String.fromCharCode(stored >> 8) + '1P0';
+  assert.ok(out.includes(prefix + payload), 'the payload at the limit was not stored');
+  assert.ok(stored > 0xFF, 'the boundary stopped exercising the high byte');
+});
+
+test('a payload too long to be a QR code is printed as text, never as a command', () => {
+  const { buildEscposData } = freshPrinter();
+  for (const length of [QR_LIMIT + 1, 65536]) {
+    const out = buildEscposData(fiscalReceipt({ irn: 'IRN-1', fiscalQr: 'X'.repeat(length) })).join('');
+    assert.ok(!out.includes(GS + '(k'), `a ${length}-character payload still reached the QR engine`);
+    assert.match(out, /QR: /, `a ${length}-character payload printed nothing at all`);
+    assert.ok(!out.includes('X'.repeat(121)), `a ${length}-character payload was printed in full`);
+  }
+});
+
+test('a QR payload that is not ASCII loses its control bytes on the way to the text line', () => {
+  const { buildEscposData } = freshPrinter();
+  // The fallback prints the payload as a line of text, which is exactly where ESC p would be obeyed.
+  // A reprint, so the one pulse a paid cash sale is entitled to is not standing in the way of it.
+  const out = buildEscposData(
+    fiscalReceipt({ irn: 'IRN-1', isReceiptPrinted: true, fiscalQr: 'https://esr.mor.gov.et/' + KICK })
+  ).join('');
+
+  assert.ok(!out.includes(GS + '(k'), 'no QR command is emitted');
+  assert.ok(!out.includes(ESC + 'p'), 'the QR fallback opened the cash drawer');
+  assert.match(out, /QR: https/);
+});

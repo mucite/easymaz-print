@@ -330,6 +330,23 @@ describe('a box with a register printer and two stations', () => {
     assert.strictEqual(wrongKey.status, 401);
   });
 
+  /**
+   * The key is compared in constant time now, which it was not: `!==` stops at the first byte that
+   * differs, and a caller on the restaurant's network can time a few thousand requests and read the
+   * secret out of the bridge one character at a time. The comparison is over two digests so that a
+   * key of the wrong length takes the same path as one of the right length, instead of a length
+   * check short-circuiting and handing back the fact it was hiding.
+   */
+  test('a key of the wrong length is refused like any other, not crashed on', async () => {
+    const short = await bridge.post('/ticket', ticket('bar', 'j-short', [{ name: 'Beer', quantity: 1 }]), 'e');
+    const long = await bridge.post('/ticket', ticket('bar', 'j-long', [{ name: 'Beer', quantity: 1 }]), 'e'.repeat(400));
+    const prefix = await bridge.post('/ticket', ticket('bar', 'j-prefix', [{ name: 'Beer', quantity: 1 }]), KEY.slice(0, -1));
+
+    assert.strictEqual(short.status, 401, JSON.stringify(short.body));
+    assert.strictEqual(long.status, 401, JSON.stringify(long.body));
+    assert.strictEqual(prefix.status, 401, JSON.stringify(prefix.body));
+  });
+
   test('a malformed job is refused by name, not swallowed', async () => {
     const bad = await bridge.post('/ticket', ticket('bar', 'j-bad', []));
 
@@ -1057,7 +1074,11 @@ describe('a register printer that fails with the money already taken', () => {
   test('the drawer on its own answers for itself when there is no printer to kick it', async () => {
     await register.close();
 
-    const res = await bridge.post('/drawer', {});
+    const res = await bridge.post('/drawer', {
+      jobId: 'drawer-dead-printer',
+      reason: 'Counting the float in',
+      openedBy: 'Sara'
+    });
 
     assert.strictEqual(res.status, 502, JSON.stringify(res.body));
     assert.strictEqual(res.body.success, false);
@@ -1071,3 +1092,109 @@ async function stayedEmptyBeyond(printer, count, ms = 600) {
   await new Promise((r) => setTimeout(r, ms));
   return printer.streams.length === count;
 }
+
+/**
+ * A slip built out of words somebody typed, travelling the whole way.
+ *
+ * The unit tests pin the builders; this pins the seam that matters, which is that nothing between an
+ * HTTP body and a printer's socket puts those words back together as commands. A menu item name and
+ * an order note are editable by staff, and a note can start on a diner's phone, so a dish called
+ * `Tibs<ESC>p<NUL><EM><FS>` was a cash drawer anyone could open from the dining room without ever
+ * touching the box.
+ *
+ * And the drawer route itself, which opens the till with no sale behind it: it stays, because a
+ * float has to be counted in, but it now has to say who is opening it and why.
+ */
+describe('words typed by a person, from the body to the socket', () => {
+  let register, bridge;
+  const DRAWER = '\x1bp\x00\x19\xfa';
+
+  before(async () => {
+    register = await fakePrinter();
+    bridge = await startBridge({
+      PRINT_SHARED_SECRET: KEY,
+      PRINTER_HOST: '127.0.0.1',
+      PRINTER_PORT: String(register.port)
+    });
+  });
+
+  after(async () => {
+    await bridge?.stop();
+    await register?.close();
+  });
+
+  test('an item name carrying the drawer kick prints as a name and opens nothing', async () => {
+    register.reset();
+    // RECEIPT is a bill: unpaid, so this slip is entitled to no drawer pulse of its own and any
+    // pulse on the wire came from the name.
+    const res = await bridge.post('/print', {
+      ...RECEIPT,
+      jobId: 'inject-drawer',
+      items: [{ name: 'Tibs' + DRAWER, quantity: 1, price: 260 }]
+    });
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(register), 'the receipt never reached the printer');
+
+    const raw = register.streams[0].toString('latin1');
+    assert.ok(!raw.includes(DRAWER), 'an item name opened the cash drawer');
+    assert.ok(!raw.includes('\x1bp'), 'ESC p reached the printer from an item name');
+    assert.match(paper(register), /Tibs/, 'the name was dropped along with the attack');
+    assert.ok(widestLine(register) <= 48, `the slip lost its columns at ${widestLine(register)}`);
+  });
+
+  test('an order note carrying GS V does not cut the ticket in half', async () => {
+    register.reset();
+    const res = await bridge.post('/ticket', {
+      jobId: 'inject-cut',
+      orderNumber: '003',
+      table: 4,
+      items: [{ name: 'Shiro', quantity: 1 }],
+      note: 'No onion\x1dV\x00 and bring it early'
+    });
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(register), 'the ticket never reached the printer');
+
+    const raw = register.streams[0].toString('latin1');
+    assert.strictEqual(raw.split('\x1dV').length - 1, 1, 'the note cut the paper mid-ticket');
+    assert.ok(raw.endsWith('\x1dV\x00'), 'the cut is no longer the last thing on the ticket');
+    // The GS is gone; the letter V that followed it is an ordinary letter and stays, which is the
+    // point — the note still reads as the note somebody wrote.
+    assert.match(paper(register), /No onion V and bring it early/, 'the note lost its words');
+  });
+
+  test('the drawer will not open without a reason and somebody to name', async () => {
+    register.reset();
+    const empty = await bridge.post('/drawer', {});
+    const anonymous = await bridge.post('/drawer', { jobId: 'd-1', reason: 'Float' });
+
+    assert.strictEqual(empty.status, 400, JSON.stringify(empty.body));
+    assert.strictEqual(anonymous.status, 400, JSON.stringify(anonymous.body));
+    assert.match(JSON.stringify(anonymous.body), /openedBy/, 'the answer did not say what was missing');
+    assert.ok(await stayedEmpty(register), 'a drawer with no reason still opened the till');
+  });
+
+  test('a drawer open is logged with who asked and why, and a retry opens nothing', async () => {
+    register.reset();
+    const open = await bridge.post('/drawer', {
+      jobId: 'd-float-1',
+      reason: 'Counting the float in',
+      openedBy: 'Sara'
+    });
+
+    assert.strictEqual(open.status, 200, JSON.stringify(open.body));
+    assert.ok(await settled(register), 'the drawer pulse never reached the printer');
+    assert.strictEqual(register.streams[0].toString('latin1'), DRAWER, 'the drawer sent something other than the pulse');
+    assert.match(bridge.log(), /\[drawer\] opened for Counting the float in by Sara/);
+
+    const retry = await bridge.post('/drawer', {
+      jobId: 'd-float-1',
+      reason: 'Counting the float in',
+      openedBy: 'Sara'
+    });
+
+    assert.strictEqual(retry.status, 200, JSON.stringify(retry.body));
+    assert.ok(await stayedEmptyBeyond(register, 1), 'a retried drawer job opened the till twice');
+  });
+});

@@ -155,4 +155,43 @@ function toPrintable(text) {
   return out;
 }
 
-module.exports = { codePageByte, toPrintable, CODE_PAGES };
+/**
+ * How long one field may be before the paper stops being a receipt and becomes a banner.
+ *
+ * 120 characters is two and a half lines of 80 mm paper, which is longer than any dish, address or
+ * cashier's name a restaurant actually has, and short enough that no single value can push the rest
+ * of the slip off the roll.
+ */
+const FIELD_MAX = 120;
+
+/**
+ * Caller-supplied text, made safe to put next to a printer command.
+ *
+ * Everything the bridge prints is assembled as one string and sent as raw bytes, so a byte inside
+ * an item name is a byte in the command stream: `0x1B 0x70` in a dish name is ESC p and the cash
+ * drawer opens, `0x1D 0x56` is GS V and the paper is cut in the middle of the sale, and `ESC !`
+ * leaves the rest of the slip printing in whatever type the name asked for. A menu item, an order
+ * note, a buyer's name and a credit note's reason are all typed by somebody — a diner's phone, in
+ * the case of a note — so none of them may carry a control byte into the stream.
+ *
+ * This is where that is stopped, rather than at each of the hundred places a value is interpolated:
+ * the builders own every ESC and GS the printer sees, and anything arriving from outside goes
+ * through here on its way into a line. The finished buffer is the wrong place, because by then the
+ * bridge's own commands are in it and indistinguishable from a forged one.
+ *
+ * A space rather than a deletion, because the receipt's columns are counted in characters: dropping
+ * a byte slides a total one column out of its column, where replacing it leaves the line exactly as
+ * wide as it was laid out to be. Newlines and tabs are controls too and go the same way, so a value
+ * with a line break in it stays on the one line the layout gave it instead of inventing rows in the
+ * middle of the item table.
+ */
+function toField(value, maxLength = FIELD_MAX) {
+  if (value === null || value === undefined) return '';
+
+  // eslint-disable-next-line no-control-regex
+  const cleaned = String(value).replace(/[\x00-\x1F\x7F]/g, ' ');
+  const limit = Number.isInteger(maxLength) && maxLength > 0 ? maxLength : FIELD_MAX;
+  return cleaned.length > limit ? cleaned.slice(0, limit) : cleaned;
+}
+
+module.exports = { codePageByte, toPrintable, toField, FIELD_MAX, CODE_PAGES };
