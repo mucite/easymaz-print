@@ -10,6 +10,17 @@ const { PrintPayloadSchema, CreditNotePayloadSchema, TicketPayloadSchema, TestPr
 const app  = express();
 const PORT = Number(process.env.PORT) || 3001;
 
+// Every interface, because inside a container that is the only way the API next door can reach it:
+// bind 127.0.0.1 here and the loopback is the container's own, which nothing else shares. What
+// keeps this off the restaurant's WiFi is not the bind address but the compose file, which
+// publishes no port for this service - so the only sockets that can be opened here belong to the
+// containers beside it.
+//
+// It is configurable for the one case that is not that: running the bridge bare on a machine, for
+// a test or a repair, where every interface means the whole network and this process will open a
+// cash drawer for anybody holding the secret. Set PRINT_BIND_ADDRESS=127.0.0.1 then.
+const BIND_ADDRESS = process.env.PRINT_BIND_ADDRESS || '0.0.0.0';
+
 // No CORS, and no TLS. Both existed for a browser talking to this bridge directly — an admin page
 // on the restaurant's network reaching a mkcert-secured https://192.168.x.x, with an origin allowlist
 // deciding who could ask.
@@ -364,7 +375,7 @@ function logPrinterTarget() {
 }
 
 function startServer() {
-  http.createServer(app).listen(PORT, '0.0.0.0', () => {
+  http.createServer(app).listen(PORT, BIND_ADDRESS, () => {
     console.log(`[easymaz-print] HTTP   http://0.0.0.0:${PORT}`);
     logPrinterTarget();
   });
