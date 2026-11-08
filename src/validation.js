@@ -26,6 +26,18 @@ const optionalText = z.preprocess(
     z.string().min(1).optional()
 );
 
+/**
+ * The same, for money and for a rate.
+ *
+ * A figure the restaurant does not have arrives as null from Jackson and as "" from a form, exactly
+ * as a text field does, and `z.number().optional()` would have called either a type error and
+ * refused the whole receipt over a discount nobody gave.
+ */
+const optionalAmount = z.preprocess(
+    (value) => (absent(value) ? undefined : value),
+    z.number().nonnegative().optional()
+);
+
 /** The same, for a flag that is false when nobody wrote it. */
 const optionalFlag = z.preprocess(
     (value) => (value === null || value === undefined ? false : value),
@@ -52,16 +64,53 @@ const PrintPayloadSchema = z.object({
 
     businessName: z.string().min(1, 'Business name is required'),
     address: z.string().min(1, 'Address is required'),
+
+    /**
+     * The seller's address as ANNEX 1 of the EIMS compliance guideline asks for it, and the day the
+     * seller was registered for VAT.
+     *
+     * The Annex does not accept an address as one line: its `ከ / From` block names a city, a zone or
+     * sub city, a woreda, a kebele and a house number, each on its own. They are optional all the
+     * same, and the flat `address` above stays required and stays what prints when no part was sent,
+     * because the restaurants printing today have their address saved as one line and a receipt must
+     * not stop coming out of the printer on the day the Annex is read. Unprefixed, because this is
+     * the seller — the buyer's own are below, under `buyer`.
+     */
+    city: optionalText,
+    subCity: optionalText,
+    woreda: optionalText,
+    kebele: optionalText,
+    houseNumber: optionalText,
+    // Printed only beside a VAT number, because a restaurant that is not registered has neither.
+    sellerVatRegisteredOn: optionalText,
     // The invoice's own serial, continuous per restaurant and assigned when the sale is settled (VAT
     // Regulation Art 20, through Directive 1142/2026 Art 4(1)(a)). Optional because an unsettled bill
     // has none yet, and a sale settled before the series existed never will. It used to be required,
     // and was fed the order's database id to satisfy that — a number that meant nothing to anyone.
     fsNo: optionalText,
 
-    // The buyer, when they asked to be named on the invoice — Art 23(3).
+    /**
+     * The buyer, when they asked to be named on the invoice — Art 23(3).
+     *
+     * ANNEX 1's `ለ / To` block is the seller's repeated for the buyer, and almost all of it is for a
+     * business buying from a business. A restaurant's customer is a diner: a sale here is B2C unless
+     * somebody hands over a TIN, and the EIMS schema says as much — on a B2C sale the buyer's TIN
+     * may be null and the buyer's VAT number must be. So the buyer has a name, an address and a TIN
+     * here and nothing else. A buyer VAT number is not an optional field on this document, it is a
+     * field this document does not have: a diner has no VAT registration to print, and a label with
+     * nothing behind it is the thing somebody eventually fills in wrongly.
+     *
+     * Every one of them is optional, and the whole block is absent from an ordinary sale.
+     */
     buyerName: optionalText,
     buyerTin: optionalText,
     buyerPhone: optionalText,
+    buyerAddress: optionalText,
+    buyerCity: optionalText,
+    buyerSubCity: optionalText,
+    buyerWoreda: optionalText,
+    buyerKebele: optionalText,
+    buyerHouseNumber: optionalText,
     orderNumber: z.string().min(1, 'Order number is required'),
     date: z.string().min(1, 'Date is required'),
     invoiceType: z.string().min(1, 'Invoice type is required'),
@@ -75,6 +124,9 @@ const PrintPayloadSchema = z.object({
     phone: optionalText,
     cashier: optionalText,
     waiter: optionalText,
+    // ANNEX 1 asks who made the document out as well as who took the money: `ያዘጋጀው ስምና ፊርማ /
+    // Prepared By`, against the cashier it already names as the receiver. Nothing sends it today.
+    preparedBy: optionalText,
     table: z.number().nullable().optional(),
 
     // Which printer this ticket belongs at — kitchen, bar, reception. Absent means the default,
@@ -93,6 +145,18 @@ const PrintPayloadSchema = z.object({
     /** VAT_INCLUSIVE or VAT_EXCLUSIVE; absent reads as inclusive. */
     menuPricing: z.enum(['VAT_INCLUSIVE', 'VAT_EXCLUSIVE']).optional(),
     convenienceFee: z.number().nonnegative().optional(),
+
+    /**
+     * The rest of ANNEX 1's totals block, as far as it applies to this trade.
+     *
+     * A discount given, and what was actually collected against the invoice. The Annex's other two —
+     * the amount withheld at source, and the rate a foreign-currency invoice was converted at — are
+     * not here at all: withholding is something a government body does when it pays a supplier, and
+     * every bill this bridge prints is in Birr. Neither is computed here either way. The bridge
+     * prints figures; the arithmetic belongs to whoever issued the invoice.
+     */
+    discountGiven: optionalAmount,
+    collectedAmount: optionalAmount,
 
     total: z.number().nonnegative('Total must be >= 0'),
 
@@ -115,6 +179,13 @@ const PrintPayloadSchema = z.object({
     // says "MOBILE MONEY TELEBIRR" rather than the gateway's name. Both optional, both only printed.
     tenderedAmount: z.number().nonnegative().optional().nullable(),
     paymentWallet: optionalText,
+    // ANNEX 1's `የክፍያ ሁኔታ / Mode of Payment` is four columns and the bridge already prints the
+    // first of them as the payment line, in the words a diner knows. Of the other three it keeps
+    // the reference the payment carries, and why the payment was made. The service provider is the
+    // gateway, which this slip has never named and is not going to start naming; the ticket's
+    // from-to belongs to a transport operator.
+    paymentDescription: optionalText,
+    paymentReference: optionalText,
     restaurantId: z.string().min(1, 'Restaurant ID is required'),
 
     paymentStatus: optionalText,
@@ -137,6 +208,22 @@ const PrintPayloadSchema = z.object({
     ordersOnlyPilot: optionalFlag,
     // On a pilot: how the diner paid at the restaurant's own register, CASH or MOBILE.
     pilotPaidWith: optionalText,
+
+    /**
+     * Who approved this software for use, for the sentence ANNEX 1 puts at the foot of the paper:
+     * the program was authorised for use by a tax authority, at a named tax centre, on a date.
+     *
+     * A group rather than three loose fields, because the three are one statement and two thirds of
+     * it is not a smaller statement — it is a false one. Nothing sends it today, and nothing can:
+     * no authority has approved this software for anything, which is the open item behind the whole
+     * accreditation question. It is declared so the sentence prints itself the day one does, and
+     * the bridge prints what it is given rather than being taught to write it.
+     */
+    authorisation: z.object({
+        taxAuthority: optionalText,
+        taxCentre: optionalText,
+        authorisedOn: optionalText
+    }).nullish(),
 
     // Where the diner's own copy of this receipt lives, encoded into the QR at the foot of the
     // slip. Built by the till from its own origin, because the address it reached this box on is by

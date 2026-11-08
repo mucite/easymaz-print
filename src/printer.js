@@ -2,6 +2,7 @@ const net    = require('net');
 const fs     = require('fs');
 const { spawn } = require('child_process');
 const { codePageByte, toPrintable, toField } = require('./charset');
+const { amountInWords } = require('./words');
 const discovery = require('./discovery');
 
 // Mac/Linux CUPS:  PRINTER_CMD=lp -d "TM-T88V" -o raw -
@@ -216,6 +217,117 @@ function money(v) {
 }
 
 /**
+ * ANNEX 1's labels, and why only half of each one reaches the paper.
+ *
+ * The Annex prints every label twice, in Amharic and in English: `የሻጭ ተ.እ.ታ ቁጥር / Seller's VAT
+ * Reg.No`. This prints the English alone, and that is a limitation of the paper rather than a
+ * choice about language.
+ *
+ * There is no ESC/POS code page for Ethiopic — see the note at the top of charset.js. The character
+ * set does not exist in the standard, so no value of `ESC t n` renders ገ, and every byte leaving
+ * this bridge goes through toPrintable, which transliterates Ethiopic into Latin letters on its way
+ * out. An Amharic label would therefore reach a thermal printer as "yeshach te.e.ta quter" — not
+ * Amharic, not English, and on a fiscal document a worse answer than the English label standing on
+ * its own. A transliterated dish name at least tells a diner what they ate; a transliterated label
+ * tells nobody anything.
+ *
+ * Printing real Amharic needs the receipt rasterised and sent with `GS v 0`, which needs an
+ * Ethiopic font shipped with the bridge and a rasteriser in it. That is the change to make if the
+ * Authority ever requires the Amharic half on the printed copy, and it is a much larger change than
+ * this one. Until then the Amharic labels live in these comments, where they can be checked against
+ * the specification without being printed as noise.
+ */
+
+/** The five parts ANNEX 1 breaks an address into, in its order. */
+const ADDRESS_PARTS = [
+    ['city', 'City'],
+    ['subCity', 'Sub city'],
+    ['woreda', 'Woreda'],
+    ['kebele', 'Kebele'],
+    ['houseNumber', 'H.No']
+];
+
+/**
+ * The address parts that were actually sent, as "Label: value" pieces.
+ *
+ * `prefix` is how the buyer's five are told from the seller's: the seller's are the bare names and
+ * the buyer's are the same names under `buyer`. Each value is capped here rather than at the line,
+ * because several of them share one line and one long value would otherwise take the whole of it.
+ */
+function addressSegments(source, prefix) {
+    const out = [];
+    for (const [key, label] of ADDRESS_PARTS) {
+        const field = prefix ? prefix + key[0].toUpperCase() + key.slice(1) : key;
+        const value = source[field];
+        if (value === null || value === undefined || String(value).trim() === '') continue;
+        out.push(label + ': ' + toField(value, 40));
+    }
+    return out;
+}
+
+/**
+ * Short pieces onto as few lines as the paper allows, without breaking one across two.
+ *
+ * The Annex is drawn as a two-column A4 form, where the five address parts sit under each other
+ * with room to spare. On 80 mm paper five lines of "Woreda: 03" is most of the header, so they are
+ * packed two or three to a line instead — and never split, because "Sub" at the end of one line and
+ * "city: Bole" at the start of the next is a label a reader has to reassemble.
+ *
+ * A single piece longer than the paper still goes through the caller's own wrapping, which is what
+ * keeps the width guarantee: nothing here can return a line wider than the roll.
+ */
+function packSegments(segments, width, wrapText) {
+    const packed = [];
+    let line = '';
+    for (const segment of segments) {
+        const test = line ? line + ', ' + segment : segment;
+        if (line && test.length > width) {
+            packed.push(line);
+            line = segment;
+        } else {
+            line = test;
+        }
+    }
+    if (line) packed.push(line);
+
+    const out = [];
+    for (const l of packed) wrapText(l).forEach(wrapped => out.push(wrapped));
+    return out;
+}
+
+/**
+ * The footer ANNEX 1 ends the paper with:
+ *
+ *   በ{{ታክስ ባለስልጣን}} በ {{ታክስ ሴንተር}} ቅ/ፅ/ቤት በ__{{ቀን}}_ ቀን __{{ወር}}_ ወር _{{ዓ/ም}}_ ዓ/ም
+ *   የኮምፒውተር ፕሮግራሙ ጥቅም ላይ እንዲውል የተፈቀደ።
+ *
+ * — the computer program was authorised for use by a named tax authority, at a named tax centre, on
+ * a date. It prints nothing at all today and will keep printing nothing until somebody sends the
+ * fields, because no authority has approved this software for use in a restaurant and a receipt
+ * that said one had would be the most consequential untrue sentence on the paper.
+ *
+ * Built from the parts that arrived rather than from all three or none: an authority with no centre
+ * named is still a true statement, where a sentence with a blank in the middle of it is a form
+ * somebody forgot to fill in. With no authority there is no sentence to make, so nothing prints.
+ */
+function authorisationLines(receipt, wrapText) {
+    const group = receipt.authorisation || {};
+    if (!group.taxAuthority) return [];
+
+    let sentence = 'Computer program authorised for use by ' + toField(group.taxAuthority, 60);
+    if (group.taxCentre)   sentence += ' at ' + toField(group.taxCentre, 60) + ' branch';
+    if (group.authorisedOn) sentence += ' on ' + toField(group.authorisedOn, 40);
+
+    // The cap is lifted because the three values above were each capped on their way in; what is
+    // left to measure is the bridge's own wording around them.
+    // The date may already end in a full stop — "30/10/2019 E.C." does — and a sentence ending in
+    // two of them reads as a typing error on a document whose whole job is to look authoritative.
+    if (!sentence.endsWith('.')) sentence += '.';
+
+    return ['\n', ...wrapText(sentence, 400).map(l => l + '\n')];
+}
+
+/**
  * Build an ESC/POS data array from a PrintPayload object.
  * Options:
  *   lineWidth: chars per line (32, 42, 48...) default 32
@@ -241,8 +353,14 @@ function buildEscposData(receipt, opts = {}) {
     // below, so toField sits in them rather than at the forty places a field is interpolated. The
     // ESC and GS sequences this function pushes straight into `lines` never pass through here, which
     // is the whole point of the seam: the layout keeps its commands, the data cannot bring its own.
-    const wrapText = (text) => {
-        const words = toField(text).split(/\s+/);
+    // The cap is a parameter because two lines on an Annex slip are written by the bridge rather
+    // than sent to it — the total in words, and the authorisation sentence built from three fields
+    // that were each capped on their own way in. FIELD_MAX is a limit on how much one caller may put
+    // on the paper, and applying it a second time to a sentence the bridge assembled would cut the
+    // end off a legitimate total somewhere above a hundred billion Birr. Control bytes are still
+    // stripped at whatever cap is given.
+    const wrapText = (text, cap) => {
+        const words = toField(text, cap).split(/\s+/);
         const res = [];
         let line = '';
         for (const word of words) {
@@ -269,6 +387,28 @@ function buildEscposData(receipt, opts = {}) {
         const val = toField(value);
         const spaces = Math.max(1, LINE_WIDTH - left.length - val.length);
         return left + " ".repeat(spaces) + val + "\n";
+    };
+
+    /**
+     * A label and a value that are too wide for the paper together.
+     *
+     * formatInfoLine puts the two at opposite edges and keeps one space between them whatever
+     * happens, which runs off the roll once the label and the value are wider than the line. The
+     * receipt's own labels are short enough that this never showed; the Annex's are not — "Buyer VAT
+     * Reg. Date" plus a date is 33 columns, and 58 mm paper is 32. So the Annex's lines go through
+     * here: the same line where it fits, and the value wrapped underneath its own label where it
+     * does not. The indent is dropped on a value that fills the whole line, because indenting it
+     * would be the overflow again by two columns.
+     */
+    const formatLabelled = (label, value) => {
+        const text = toField(value);
+        // The + 1 is the space formatInfoLine keeps between the two whatever the arithmetic says.
+        if ((label + " : ").length + 1 + text.length <= LINE_WIDTH) {
+            return [formatInfoLine(label, value)];
+        }
+        const out = [toField(label) + ":\n"];
+        wrapText(text).forEach(l => out.push((l.length + 2 <= LINE_WIDTH ? "  " + l : l) + "\n"));
+        return out;
     };
 
     const QTY_W    = 5;
@@ -345,8 +485,26 @@ function buildEscposData(receipt, opts = {}) {
     centerLines(String(receipt.businessName).toUpperCase()).forEach(l => lines.push(l));
     lines.push(ESC + "E" + "\x00");
 
-    if (receipt.address) centerLines(receipt.address).forEach(l => lines.push(l));
+    // The seller's address. ANNEX 1 wants it in parts — city, sub city, woreda, kebele, house
+    // number — and the flat line is what prints when the restaurant has never had it any other way,
+    // which today is all of them. Never both: the parts are the same address spelled out, and a
+    // receipt that gives an address twice invites the reader to look for the difference.
+    const sellerAddress = addressSegments(receipt);
+    if (sellerAddress.length) {
+        packSegments(sellerAddress, LINE_WIDTH, wrapText).forEach(l => lines.push(l + "\n"));
+    } else if (receipt.address) {
+        centerLines(receipt.address).forEach(l => lines.push(l));
+    }
     if (receipt.phone)   centerLines("TEL: " + receipt.phone).forEach(l => lines.push(l));
+
+    // What ANNEX 1 calls the document: `የገንዘብ መቀበያ ደረሰኝ ( Receipt Invoice)`, in English for the
+    // reason given in the note on Annex labels below. Not printed where the banner underneath says
+    // this paper is a bill, or is not a registered receipt — a title and a notice that contradict
+    // each other leave the reader to pick one, and the notice is the one that matters. The document
+    // type stays on its own line further down, where it has always been.
+    if (receipt.isPaid !== false && !mustDeclareNotFiscal(receipt)) {
+        centerLines("RECEIPT INVOICE").forEach(l => lines.push(l));
+    }
 
     // What this piece of paper is, before anything else on it — see statusBanners. Printed here,
     // under the name and above the taxpayer's identifiers, because the top of the slip is what a
@@ -361,6 +519,13 @@ function buildEscposData(receipt, opts = {}) {
     // under the right label and omitted the other three entirely.
     if (receipt.tin)                   centerLines("TIN: " + receipt.tin).forEach(l => lines.push(l));
     if (receipt.vatRegistrationNumber) centerLines("VAT No: " + receipt.vatRegistrationNumber).forEach(l => lines.push(l));
+    // The day the seller was registered for VAT, which ANNEX 1 asks for under the number itself and
+    // which decides whether a given invoice was inside the registration at all. Under the number
+    // and never without it: a restaurant that is not registered has no number and no date, and a
+    // registration date standing on its own says the opposite of the truth about this slip.
+    if (receipt.vatRegistrationNumber && receipt.sellerVatRegisteredOn) {
+        centerLines("VAT Reg. Date: " + receipt.sellerVatRegisteredOn).forEach(l => lines.push(l));
+    }
     if (receipt.fsNumber)              centerLines("FS No: " + receipt.fsNumber).forEach(l => lines.push(l));
     if (receipt.mrcNumber)             centerLines("MRC: " + receipt.mrcNumber).forEach(l => lines.push(l));
 
@@ -375,10 +540,36 @@ function buildEscposData(receipt, opts = {}) {
     // `value || ""` would have dropped.
     if (receipt.table != null) lines.push(formatInfoLine("Table", receipt.table));
     if (receipt.cashier)     lines.push(formatInfoLine("Cashier", receipt.cashier));
-    // Art 23(3): named on the invoice when the buyer asked to be.
-    if (receipt.buyerName)   lines.push(formatInfoLine("Buyer", receipt.buyerName));
+    // Art 23(3): named on the invoice when the buyer asked to be, which in a restaurant is rare.
+    //
+    // ANNEX 1's `ለ / To` block, less the parts that belong to a business buying from a business: a
+    // sale here is B2C unless a TIN is handed over, and the EIMS schema has the buyer's VAT number
+    // null on every B2C sale. So this is a name, an address and a TIN. Each prints only if it was
+    // sent, which means an ordinary diner's receipt has no buyer block at all — no heading, no
+    // labels, no rule across the paper where one would have gone. The labels stay prefixed "Buyer"
+    // rather than sitting under a heading, so a line read on its own cannot be mistaken for the
+    // seller's on a slip where the two blocks are stacked rather than printed side by side.
+    if (receipt.buyerName)   formatLabelled("Buyer", receipt.buyerName).forEach(l => lines.push(l));
+
+    // Parts if they were sent, the flat line if not; wrapped under its own label, because an address
+    // is the one buyer field long enough to run past the paper on a right-aligned line.
+    const buyerAddress = addressSegments(receipt, "buyer");
+    const buyerAddressLines = buyerAddress.length
+        ? buyerAddress
+        : (receipt.buyerAddress ? [toField(receipt.buyerAddress)] : []);
+    if (buyerAddressLines.length) {
+        lines.push("Buyer address:\n");
+        packSegments(buyerAddressLines, LINE_WIDTH, wrapText).forEach(l => lines.push(l + "\n"));
+    }
+
     if (receipt.buyerTin)    lines.push(formatInfoLine("Buyer TIN", receipt.buyerTin));
     if (receipt.waiter)      lines.push(formatInfoLine("Waiter", receipt.waiter));
+
+    // `የክፍያ ምክንያት / Payment Description`: what the money is for, in the issuer's words. Above the
+    // lines rather than below them, because it is the heading the lines fall under.
+    if (receipt.paymentDescription) {
+        wrapText("Payment description: " + receipt.paymentDescription).forEach(l => lines.push(l + "\n"));
+    }
 
     lines.push(repeat("-", LINE_WIDTH) + "\n");
 
@@ -422,6 +613,28 @@ function buildEscposData(receipt, opts = {}) {
         lines.push(formatTotalLine(vatPct ? `VAT ${vatPct}% INCL` : "VAT INCL", receipt.vat));
     }
 
+    // The rest of ANNEX 1's totals block that this trade has any use for, under the total it
+    // qualifies.
+    //
+    // A discount prints only where one was given: zero discount is not a fact about this sale, it is
+    // the ordinary case, and a line saying so on every lunch bill is the noise that makes a reader
+    // stop reading the lines that matter. What was collected is the other way round — nothing
+    // collected on a bill that has not been paid is exactly the fact the line carries — so it prints
+    // whenever it was sent at all.
+    if (receipt.discountGiven)  lines.push(formatTotalLine("DISCOUNT GIVEN", receipt.discountGiven));
+    if (receipt.collectedAmount != null) lines.push(formatTotalLine("COLLECTED", receipt.collectedAmount));
+
+    // `ጠቅላላ ዋጋ በፊደል ብር / In Words Birr`, worked out from the number printed two lines above rather
+    // than read from the payload — see words.js for why the two must not be able to disagree. A
+    // total too large to name prints no line at all rather than a label with nothing after it.
+    const words = amountInWords(receipt.total);
+    if (words) {
+        lines.push("\n");
+        // The cap is lifted because this sentence is the bridge's own: it holds no caller text, and
+        // FIELD_MAX would cut the tail off a total in the hundreds of billions.
+        wrapText("In words: " + words, 400).forEach(l => lines.push(l + "\n"));
+    }
+
     lines.push("\n");
 
     // How it was paid, in words a diner knows. An unpaid bill commits to no method — the diner may
@@ -430,6 +643,24 @@ function buildEscposData(receipt, opts = {}) {
     // diner). The raw status line that used to follow ("Status: PAID") said the same thing in the
     // payment engine's words and is gone.
     paymentLines(receipt, receipt.total).forEach(l => lines.push(formatTotalLine(l[0], l[1])));
+
+    // The one other column of `የክፍያ ሁኔታ / Mode of Payment` this slip carries: the reference the
+    // payment itself has, for the diner who has to match it against a statement. The method is the
+    // line above, in the words a diner knows; the gateway that moved the money is not named here and
+    // never has been.
+    if (receipt.paymentReference) formatLabelled("Reference", receipt.paymentReference).forEach(l => lines.push(l));
+
+    // `ያዘጋጀው ስምና ፊርማ / Prepared By` and `የተቀባይ (ሻጭ) ስምና ፊርማ / Receiver Name & Signature`.
+    //
+    // The whole block hangs on preparedBy, which is the field a caller sending Annex data sends and
+    // nothing sends today. Without it the receiver line would be the cashier's name printed a second
+    // time under a heading nobody asked for — the slip already names the cashier at the top — and
+    // the Annex's signature rules would be two blank lines on a thermal slip that nobody signs.
+    if (receipt.preparedBy) {
+        lines.push("\n");
+        formatLabelled("Prepared by", receipt.preparedBy).forEach(l => lines.push(l));
+        if (receipt.cashier) formatLabelled("Receiver (seller)", receipt.cashier).forEach(l => lines.push(l));
+    }
 
     lines.push("\n");
 
@@ -449,6 +680,9 @@ function buildEscposData(receipt, opts = {}) {
     lines.push(ESC + "a" + "\x01"); // center
     centerLines("Thank you!").forEach(l => lines.push(l));
     centerLines("Powered by EasyMaz").forEach(l => lines.push(l));
+    // The sentence ANNEX 1 ends the paper with: who authorised this program for use, where, and
+    // when. See authorisationLines — today it prints nothing, because nobody has.
+    authorisationLines(receipt, wrapText).forEach(l => lines.push(l));
 
     lines.push("\n".repeat(FEED_LINES));
 

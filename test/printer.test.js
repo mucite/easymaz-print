@@ -1292,3 +1292,330 @@ test('a QR payload that is not ASCII loses its control bytes on the way to the t
   assert.ok(!out.includes(ESC + 'p'), 'the QR fallback opened the cash drawer');
   assert.match(out, /QR: https/);
 });
+
+/**
+ * ANNEX 1 of the Ministry of Revenue's EIMS compliance guideline, section 2.1.5: the compact layout
+ * for a fiscal print on an embedded printer, which is this paper.
+ *
+ * The Annex is drawn as a two-column A4 form for every trade the Ministry registers — transport
+ * operators with a ticket's from-to, exporters invoicing in dollars, government bodies withholding
+ * tax at source. A plate of food paid for at a counter is none of those, so what is tested here is
+ * as much what the slip does not print as what it does: a diner has no VAT registration, and a
+ * label on a fiscal document with nothing behind it is the field somebody eventually fills in
+ * wrongly.
+ *
+ * The seller and buyer blocks are side by side on the Annex's A4 form and stacked here, because
+ * 80 mm paper has one column.
+ */
+
+/** A sale carrying everything a restaurant could legitimately put in the Annex's boxes. */
+const ANNEX_SALE = {
+  ...CASH_SALE,
+  vatRegistrationNumber: 'ETH0098765',
+  sellerVatRegisteredOn: '01/07/2019',
+  mrcNumber: 'MRC882401',
+  city: 'Addis Ababa',
+  subCity: 'Nifas Silk-Lafto',
+  woreda: '03',
+  kebele: '05',
+  houseNumber: '221',
+  buyerName: 'Habesha Trading PLC',
+  buyerTin: '0098765432',
+  buyerCity: 'Addis Ababa',
+  buyerSubCity: 'Bole',
+  buyerWoreda: '11',
+  buyerKebele: '07',
+  buyerHouseNumber: 'New',
+  paymentDescription: 'Food and beverage served at the premises',
+  paymentReference: 'CHP-7741-22',
+  discountGiven: 25,
+  collectedAmount: 401.5,
+  preparedBy: 'Sara Tesfaye',
+  taxableAmount: 349.13,
+  vat: 52.37,
+  vatPercentage: 15,
+  authorisation: { taxAuthority: 'Ministry of Revenue', taxCentre: 'Bole', authorisedOn: '30/10/2019 E.C.' }
+};
+
+/** The printed text alone, with every ESC/POS command this builder emits taken back out. */
+const paperOf = (lines) =>
+  lines.join('').replace(/\x1B@|\x1B[ta][\s\S]|\x1BE[\s\S]|\x1Bp[\s\S]{3}|\x1DV[\s\S]|\x1D![\s\S]/g, '');
+
+test('the Annex\'s fields print, in the order the Annex puts them in', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = paperOf(buildEscposData(ANNEX_SALE, { lineWidth: 48 }));
+
+  const order = [
+    'RECEIPT INVOICE',
+    'TIN: 0012345678',
+    'VAT No: ETH0098765',
+    'VAT Reg. Date: 01/07/2019',
+    'MRC',
+    'Buyer : ',
+    'Buyer address:',
+    'Buyer TIN',
+    'Payment description: Food and beverage',
+    'SUBTOTAL',
+    'TOTAL',
+    'DISCOUNT GIVEN',
+    'COLLECTED',
+    'In words: Four hundred one Birr and 50/100',
+    'Reference : ',
+    'Prepared by : ',
+    'Receiver (seller) : ',
+    'Computer program authorised for use by Ministry'
+  ];
+
+  let at = -1;
+  for (const text of order) {
+    const found = out.indexOf(text, at + 1);
+    assert.ok(found > at, `${text} is missing, or out of the Annex's order`);
+    at = found;
+  }
+});
+
+test('an ordinary diner\'s receipt has no buyer block anywhere on it', () => {
+  // A restaurant's customer is a diner, not a company reclaiming VAT: the sale is B2C unless
+  // somebody hands over a TIN, and nothing in the Annex's To block applies to it. Printing the
+  // labels empty would put a VAT registration on the receipt of a customer who has none.
+  const { buildEscposData } = freshPrinter();
+  const out = paperOf(buildEscposData(CASH_SALE, { lineWidth: 48 }));
+
+  for (const label of ['Buyer', 'Buyer TIN', 'Buyer address', 'Buyer VAT', 'VAT Reg. Date', 'To :']) {
+    assert.ok(!out.includes(label), `${label} printed on a sale with no buyer`);
+  }
+  // And nothing else the Annex asks for that this sale does not have.
+  for (const label of ['DISCOUNT GIVEN', 'COLLECTED', 'Reference', 'Prepared by', 'Receiver',
+                       'Payment description', 'authorised for use', 'City:', 'Woreda:']) {
+    assert.ok(!out.includes(label), `${label} printed on a sale that carries no such field`);
+  }
+});
+
+test('an absent Annex field leaves no empty label and no stray rule on the paper', () => {
+  const { buildEscposData } = freshPrinter();
+
+  for (const receipt of [CASH_SALE, fiscalReceipt({}), ANNEX_SALE]) {
+    for (const width of [48, 32]) {
+      const out = paperOf(buildEscposData(receipt, { lineWidth: width }));
+      // A label printed without its value leaves the padding behind: the line ends in a space.
+      assert.ok(!/ \n/.test(out), 'a line ended in padding, which is a label with nothing after it');
+      assert.ok(!/:\s*\n\s*\n/.test(out), 'a label was left hanging over a blank line');
+      assert.ok(!/_{3,}/.test(out), 'a signature rule was printed for a field nobody sent');
+    }
+  }
+});
+
+test('the seller\'s address prints in parts when it was sent in parts, and as one line when it was not', () => {
+  const { buildEscposData } = freshPrinter();
+
+  const parts = paperOf(buildEscposData(ANNEX_SALE, { lineWidth: 48 }));
+  assert.match(parts, /City: Addis Ababa/);
+  assert.match(parts, /Sub city: Nifas Silk-Lafto/);
+  assert.match(parts, /Woreda: 03/);
+  assert.match(parts, /Kebele: 05/);
+  assert.match(parts, /H\.No: 221/);
+  // Never both: the parts are the same address spelled out, and printing it twice invites the
+  // reader to look for the difference.
+  assert.ok(!parts.includes('Bole Road, Addis Ababa'), 'the flat address printed under its own parts');
+
+  const flat = paperOf(buildEscposData(CASH_SALE, { lineWidth: 48 }));
+  assert.match(flat, /Bole Road, Addis Ababa/);
+  assert.ok(!flat.includes('City:'), 'an address part printed for a restaurant that has none');
+});
+
+test('a VAT registration date never prints without the number it belongs to', () => {
+  const { buildEscposData } = freshPrinter();
+  const unregistered = paperOf(buildEscposData(
+    { ...CASH_SALE, sellerVatRegisteredOn: '01/07/2019' }, { lineWidth: 48 }
+  ));
+
+  assert.ok(!unregistered.includes('VAT'), 'a restaurant with no VAT number printed a registration date');
+  assert.ok(!unregistered.includes('01/07/2019'));
+});
+
+test('the fields that belong to another trade are not printed, whoever sends them', () => {
+  // Withholding, a foreign-currency rate, a gateway's name and a buyer's VAT registration are not
+  // optional fields on this document; they are fields this document does not have. A caller that
+  // sends one is a caller that has misunderstood the slip, and the paper says so by ignoring it.
+  const { buildEscposData } = freshPrinter();
+  const out = paperOf(buildEscposData({
+    ...ANNEX_SALE,
+    withheldAmount: 12.5,
+    exchangeRate: 57.2534,
+    paymentServiceProvider: 'Chapa',
+    buyerVatNumber: 'ETH0055512',
+    buyerVatRegisteredOn: '12/02/2021',
+    ticketFrom: 'Addis Ababa',
+    ticketTo: 'Hawassa'
+  }, { lineWidth: 48 }));
+
+  for (const value of ['12.50', '57.2534', 'Chapa', 'ETH0055512', '12/02/2021', 'Hawassa']) {
+    assert.ok(!out.includes(value), `${value} reached the paper`);
+  }
+  for (const label of ['WITHHELD', 'Exchange rate', 'Service provider', 'Buyer VAT', 'Ticket']) {
+    assert.ok(!out.includes(label), `${label} reached the paper`);
+  }
+});
+
+test('a discount prints where one was given, and not where there was none', () => {
+  const { buildEscposData } = freshPrinter();
+  const given = paperOf(buildEscposData({ ...CASH_SALE, discountGiven: 25 }, {}));
+  const none = paperOf(buildEscposData({ ...CASH_SALE, discountGiven: 0 }, {}));
+
+  assert.match(given, /DISCOUNT GIVEN\s+25\n/);
+  assert.ok(!none.includes('DISCOUNT GIVEN'), 'a lunch bill with no discount said so');
+});
+
+test('nothing collected is a fact a bill carries; nothing sent is not', () => {
+  const { buildEscposData } = freshPrinter();
+  const unpaid = paperOf(buildEscposData({ ...CASH_SALE, isPaid: false, collectedAmount: 0 }, {}));
+  const silent = paperOf(buildEscposData(CASH_SALE, {}));
+
+  assert.match(unpaid, /COLLECTED\s+0\n/);
+  assert.ok(!silent.includes('COLLECTED'));
+});
+
+test('the total is written out in words, from the figure that printed', () => {
+  const { buildEscposData } = freshPrinter();
+
+  assert.match(paperOf(buildEscposData(CASH_SALE, {})), /In words: Four hundred one Birr and 50\/100/);
+  // Wrapped where it has to be: the sentence is longer than the paper is wide.
+  assert.match(
+    paperOf(buildEscposData({ ...CASH_SALE, total: 1150.5 }, {})),
+    /In words: One thousand one hundred fifty Birr\nand 50\/100/
+  );
+  assert.match(paperOf(buildEscposData({ ...CASH_SALE, total: 0 }, {})), /In words: Zero Birr and 00\/100/);
+});
+
+test('the words are worked out here, so a payload cannot make them disagree with the figure', () => {
+  // The one defect this line can have is saying a different number from the one above it, so the
+  // words are never read from the payload however insistently it offers them.
+  const { buildEscposData } = freshPrinter();
+  const out = paperOf(buildEscposData({
+    ...CASH_SALE,
+    total: 1150.5,
+    totalInWords: 'One million Birr',
+    amountInWords: 'One million Birr'
+  }, {}));
+
+  assert.match(out, /In words: One thousand one hundred fifty Birr\nand 50\/100/);
+  assert.ok(!out.includes('One million'), 'the payload wrote the words');
+});
+
+test('the title says what the document is, except where the banner under it would contradict it', () => {
+  const { buildEscposData } = freshPrinter();
+
+  assert.match(paperOf(buildEscposData(CASH_SALE, {})), /RECEIPT INVOICE/);
+  // A bill is not a receipt, and a slip that cannot be registered is not an invoice the Authority
+  // issued. The banner is the title on both.
+  assert.ok(!paperOf(buildEscposData({ ...CASH_SALE, isPaid: false }, {})).includes('RECEIPT INVOICE'));
+  assert.ok(!paperOf(buildEscposData({ ...CASH_SALE, directiveInForce: true }, {})).includes('RECEIPT INVOICE'));
+  // The document type keeps its own line either way.
+  assert.match(paperOf(buildEscposData({ ...CASH_SALE, isPaid: false }, {})), /Type : /);
+});
+
+test('the authorisation footer names who authorised the program, and prints nothing when nobody has', () => {
+  const { buildEscposData } = freshPrinter();
+
+  const full = paperOf(buildEscposData(ANNEX_SALE, {}));
+  assert.match(full, /Computer program authorised for use by Ministry\nof Revenue at Bole branch on 30\/10\/2019 E\.C\.\n/);
+  // One full stop, not two: the date it was authorised on ends in one of its own.
+  assert.ok(!full.includes('E.C..'));
+
+  // Nothing has been authorised for use by anybody, which is the state of the world today.
+  assert.ok(!paperOf(buildEscposData(CASH_SALE, {})).includes('authorised for use'));
+
+  // Two thirds of the sentence is still a true sentence; a blank in the middle of one is a form
+  // somebody forgot to fill in.
+  const partial = paperOf(buildEscposData(
+    { ...CASH_SALE, authorisation: { taxAuthority: 'Ministry of Revenue' } }, {}
+  ));
+  assert.match(partial, /Computer program authorised for use by Ministry\nof Revenue\.\n/);
+  assert.ok(!partial.includes('branch'));
+
+  // And with no authority there is no sentence to make.
+  assert.ok(!paperOf(buildEscposData(
+    { ...CASH_SALE, authorisation: { taxCentre: 'Bole', authorisedOn: '30/10/2019 E.C.' } }, {}
+  )).includes('authorised for use'));
+});
+
+for (const width of [48, 32]) {
+  test(`every Annex line stays inside the paper at ${width} columns`, () => {
+    const { buildEscposData } = freshPrinter();
+    const long = 'Addis Ababa Sub City Woreda Kebele House Number ';
+    const stretched = {
+      ...ANNEX_SALE,
+      city: long.repeat(3),
+      subCity: long.repeat(3),
+      buyerName: long.repeat(3),
+      buyerCity: long.repeat(3),
+      buyerAddress: long.repeat(3),
+      paymentDescription: long.repeat(3),
+      paymentReference: long.repeat(3),
+      preparedBy: long.repeat(3),
+      sellerVatRegisteredOn: long.repeat(3),
+      total: 999999999999.99,
+      authorisation: { taxAuthority: long.repeat(3), taxCentre: long.repeat(3), authorisedOn: long.repeat(3) }
+    };
+
+    for (const line of paperOf(buildEscposData(stretched, { lineWidth: width })).split('\n')) {
+      assert.ok(line.length <= width, `"${line}" is ${line.length} columns on ${width}-column paper`);
+    }
+  });
+}
+
+test('a long Annex value wraps under its own label rather than running off the roll', () => {
+  // 58 mm paper is 32 columns, and "Buyer : " plus a company's name is past that on its own.
+  const { buildEscposData } = freshPrinter();
+  const out = paperOf(buildEscposData(
+    { ...ANNEX_SALE, buyerName: 'Habesha Trading and General Import PLC' }, { lineWidth: 32 }
+  ));
+
+  assert.match(out, /Buyer:\n {2}Habesha Trading and General\n {2}Import PLC\n/);
+});
+
+test('the total in words is never cut short by the field cap', () => {
+  // FIELD_MAX is a limit on what one caller may put on the paper. The words are the bridge's own,
+  // and a total in the hundreds of billions writes out to more than 120 characters.
+  const { buildEscposData } = freshPrinter();
+  const out = paperOf(buildEscposData({ ...CASH_SALE, total: 999999999999.99 }, {}));
+
+  assert.match(out, /In words: Nine hundred ninety-nine billion/);
+  assert.match(out, /ninety-nine thousand nine hundred ninety-nine\nBirr and 99\/100\n/);
+});
+
+test('an Annex field is caller text, and cannot carry a control byte to the printer', () => {
+  const { buildEscposData } = freshPrinter();
+  // A reprint, so the one drawer pulse a paid cash sale is entitled to is not standing in the way.
+  const out = buildEscposData({
+    ...ANNEX_SALE,
+    isReceiptPrinted: true,
+    city: 'Bole' + KICK,
+    buyerName: 'Habesha' + GS + 'V' + '\x00',
+    buyerCity: 'Bole' + KICK,
+    paymentDescription: 'Lunch' + ESC + '!' + '\x38',
+    paymentReference: 'CHP' + KICK,
+    preparedBy: 'Sara\nTOTAL   9999',
+    sellerVatRegisteredOn: '2019' + KICK,
+    authorisation: { taxAuthority: 'MoR' + KICK, taxCentre: 'Bole' + GS + 'V' + '\x00', authorisedOn: '2019' + KICK }
+  }, {}).join('');
+
+  assert.ok(!out.includes(ESC + 'p'), 'an Annex field opened the cash drawer');
+  assert.strictEqual(count(out, GS + 'V'), 1, 'an Annex field cut the paper');
+  assert.ok(!out.includes(ESC + '!'), 'an Annex field changed the type the rest of the slip prints in');
+  assert.ok(!/\nTOTAL   9999/.test(out), 'an Annex field invented a line of its own');
+  assert.match(out, /Habesha/);
+});
+
+test('no Amharic label reaches the paper, because no code page can render one', () => {
+  // ANNEX 1 prints every label in Amharic and English. There is no ESC/POS code page for Ethiopic,
+  // so an Amharic label would be transliterated into Latin letters on its way out — "yeshach
+  // te.e.ta quter" — which is neither language and is worse than the English standing alone. The
+  // Amharic lives in the comments beside each label instead.
+  const { buildEscposData } = freshPrinter();
+  const out = buildEscposData(ANNEX_SALE, {}).join('');
+
+  assert.ok(!/[ሀ-፿]/.test(out), 'Ethiopic reached the buffer, where it would be transliterated');
+  assert.match(out, /Buyer/);
+  assert.match(out, /In words/);
+});

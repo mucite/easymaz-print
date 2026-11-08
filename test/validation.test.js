@@ -253,3 +253,100 @@ test('a price sent with a ticket item is dropped, never printed', () => {
   assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
   assert.ok(!('price' in parsed.data.items[0]));
 });
+
+/**
+ * ANNEX 1's fields, every one of them optional.
+ *
+ * The Annex was read long after boxes were printing receipts, so the test that matters most here is
+ * the one that says nothing changed: a payload the API sends today has none of these fields and
+ * still validates, still prints, and prints exactly what it printed before. The rest pin what the
+ * schema will and will not accept — including the fields it refuses to carry at all, because an
+ * unused field on a fiscal document is one somebody eventually populates wrongly.
+ */
+
+test('the Annex adds nothing a payload in flight today has to carry', () => {
+  const parsed = PrintPayloadSchema.safeParse(lawful());
+  assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+
+  for (const field of ['city', 'subCity', 'woreda', 'kebele', 'houseNumber', 'sellerVatRegisteredOn',
+                       'buyerAddress', 'buyerCity', 'paymentDescription', 'paymentReference',
+                       'discountGiven', 'collectedAmount', 'preparedBy', 'authorisation']) {
+    assert.strictEqual(parsed.data[field], undefined, `${field} was invented for a payload that has none`);
+  }
+});
+
+test('the Annex\'s fields come through when a caller sends them', () => {
+  const parsed = PrintPayloadSchema.safeParse({
+    ...lawful(),
+    city: 'Addis Ababa',
+    subCity: 'Bole',
+    woreda: '03',
+    kebele: '05',
+    houseNumber: '221',
+    sellerVatRegisteredOn: '01/07/2019',
+    buyerName: 'Habesha Trading PLC',
+    buyerAddress: 'Bole Road',
+    buyerCity: 'Addis Ababa',
+    buyerSubCity: 'Bole',
+    buyerWoreda: '11',
+    buyerKebele: '07',
+    buyerHouseNumber: 'New',
+    paymentDescription: 'Food and beverage',
+    paymentReference: 'CHP-7741-22',
+    discountGiven: 25,
+    collectedAmount: 69,
+    preparedBy: 'Sara',
+    authorisation: { taxAuthority: 'Ministry of Revenue', taxCentre: 'Bole', authorisedOn: '30/10/2019 E.C.' }
+  });
+
+  assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+  assert.strictEqual(parsed.data.subCity, 'Bole');
+  assert.strictEqual(parsed.data.buyerHouseNumber, 'New');
+  assert.strictEqual(parsed.data.discountGiven, 25);
+  assert.strictEqual(parsed.data.authorisation.taxCentre, 'Bole');
+});
+
+test('an amount the restaurant does not have is absent, not a type error', () => {
+  // Null is what Jackson writes for an unset figure and "" is what a form sends, exactly as for
+  // text. Refusing either would have refused the whole receipt over a discount nobody gave.
+  for (const value of [null, '', '   ']) {
+    const parsed = PrintPayloadSchema.safeParse({ ...lawful(), discountGiven: value, collectedAmount: value });
+    assert.ok(parsed.success, `${JSON.stringify(value)}: ${JSON.stringify(parsed.error?.issues)}`);
+    assert.strictEqual(parsed.data.discountGiven, undefined);
+    assert.strictEqual(parsed.data.collectedAmount, undefined);
+  }
+
+  // A figure that is a figure is still checked.
+  assert.equal(PrintPayloadSchema.safeParse({ ...lawful(), discountGiven: -1 }).success, false);
+  assert.equal(PrintPayloadSchema.safeParse({ ...lawful(), collectedAmount: 'lots' }).success, false);
+});
+
+test('the authorisation is a group, and every part of it is optional', () => {
+  for (const authorisation of [undefined, null, {}, { taxAuthority: 'Ministry of Revenue' }]) {
+    const parsed = PrintPayloadSchema.safeParse({ ...lawful(), authorisation });
+    assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+  }
+  assert.equal(PrintPayloadSchema.safeParse({ ...lawful(), authorisation: 'MoR' }).success, false);
+});
+
+test('a field belonging to another trade is not carried, whoever sends it', () => {
+  // A restaurant withholds nothing at source, invoices in Birr, and sells to a diner who has no VAT
+  // registration. These are not optional fields on this receipt; they are not fields on it at all,
+  // so the schema drops them rather than handing the printer something to find a line for.
+  const parsed = PrintPayloadSchema.safeParse({
+    ...lawful(),
+    withheldAmount: 12.5,
+    exchangeRate: 57.2534,
+    paymentServiceProvider: 'Chapa',
+    buyerVatNumber: 'ETH0055512',
+    buyerVatRegisteredOn: '12/02/2021',
+    ticketFrom: 'Addis Ababa',
+    ticketTo: 'Hawassa'
+  });
+
+  assert.ok(parsed.success, 'an unknown field should be dropped, not refused');
+  for (const field of ['withheldAmount', 'exchangeRate', 'paymentServiceProvider',
+                       'buyerVatNumber', 'buyerVatRegisteredOn', 'ticketFrom', 'ticketTo']) {
+    assert.strictEqual(parsed.data[field], undefined, `${field} is carried by the schema`);
+  }
+});
