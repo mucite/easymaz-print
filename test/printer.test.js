@@ -4,6 +4,15 @@ const path = require('node:path');
 
 const PRINTER = path.join(__dirname, '..', 'src', 'printer.js');
 
+const { base64Png, grid } = require(path.join(__dirname, 'png-fixture.js'));
+
+/** A stand-in for what EIMS returns: 600x600, square modules, drawn and signed by somebody else. */
+const SIGNED_QR = base64Png(grid(600, 600, (x, y) =>
+  Math.floor(x / 24) % 2 === Math.floor(y / 24) % 2));
+
+/** Whichever piece of a built slip is the raster image, if one is there. */
+const rasterOf = (lines) => lines.find(l => Buffer.isBuffer(l));
+
 /**
  * Where a ticket goes on a site with more than one printer.
  *
@@ -829,6 +838,18 @@ for (const paymentStatus of ['PAID', 'paid', 'REFUNDED']) {
   });
 }
 
+test("an unpaid bill carries no signed image either, whatever the payload says", () => {
+  // The Authority's code in its strongest form: a picture they signed, which their app validates
+  // against their records. A bill is not a sale, so a bill carrying one would be the one thing on
+  // the paper claiming a sale that has not happened yet.
+  const { buildEscposData, withoutUnsoldCodes } = freshPrinter();
+  const bill = { ...REGISTERED, paymentStatus: 'UNPAID', fiscalQrImage: SIGNED_QR };
+
+  assert.strictEqual(withoutUnsoldCodes(bill).fiscalQrImage, undefined);
+  const lines = buildEscposData(fiscalReceipt(bill), { lineWidth: 48 });
+  assert.ok(!lines.some(l => Buffer.isBuffer(l)), "an unpaid bill printed the Authority's code");
+});
+
 test('stripping the codes leaves the payload it was given alone', () => {
   const { withoutUnsoldCodes } = freshPrinter();
   const input = { ...REGISTERED, paymentStatus: 'UNPAID' };
@@ -1384,8 +1405,10 @@ test('an ordinary diner\'s receipt has no buyer block anywhere on it', () => {
   for (const label of ['Buyer', 'Buyer TIN', 'Buyer address', 'Buyer VAT', 'VAT Reg. Date', 'To :']) {
     assert.ok(!out.includes(label), `${label} printed on a sale with no buyer`);
   }
-  // And nothing else the Annex asks for that this sale does not have.
-  for (const label of ['DISCOUNT GIVEN', 'COLLECTED', 'Reference', 'Prepared by', 'Receiver',
+  // And nothing else the Annex asks for that this sale does not have. Prepared by and Receiver are
+  // not on that list any more: this sale has a waiter and a cashier, which is exactly what those
+  // two lines name, so they print. See the signature-line tests below.
+  for (const label of ['DISCOUNT GIVEN', 'COLLECTED', 'Reference',
                        'Payment description', 'authorised for use', 'City:', 'Woreda:']) {
     assert.ok(!out.includes(label), `${label} printed on a sale that carries no such field`);
   }
@@ -1618,4 +1641,161 @@ test('no Amharic label reaches the paper, because no code page can render one', 
   assert.ok(!/[ሀ-፿]/.test(out), 'Ethiopic reached the buffer, where it would be transliterated');
   assert.match(out, /Buyer/);
   assert.match(out, /In words/);
+});
+
+/**
+ * The Authority's QR, as a picture rather than as a payload.
+ *
+ * EIMS returns `signedQR` with every registered sale: a 600x600 PNG it drew and signed, and what
+ * their official app validates is that image against their records. The printer's own encoder
+ * cannot be used for it — handing it the payload draws a different code, and printing the payload
+ * as text draws none — and their acceptance suite ends every case by scanning what is on the
+ * paper. So the field carries the image, and these are the seams that image has to survive: that
+ * it reaches the socket as a raster, that it does not go through the sanitiser that protects the
+ * text, and that when it is unreadable the diner still gets their receipt.
+ */
+
+test("the Authority's QR prints as the image they signed, not as a code of ours", () => {
+  const { buildEscposData } = freshPrinter();
+  const lines = buildEscposData(
+    fiscalReceipt({ irn: 'IRN-1', fiscalQr: 'https://esr.mor.gov.et/v/ABC123', fiscalQrImage: SIGNED_QR }),
+    { lineWidth: 48 }
+  );
+
+  const image = rasterOf(lines);
+  assert.ok(image, 'the signed image did not reach the slip');
+  assert.deepStrictEqual([...image.subarray(0, 4)], [0x1D, 0x76, 0x30, 0x00], 'the image is not a GS v 0 raster');
+  assert.strictEqual(image[4] | (image[5] << 8), 50, '400 dots across is 50 bytes');
+  assert.strictEqual(image[6] | (image[7] << 8), 400, 'the code is not square at 400 dots');
+
+  // And the payload was not encoded a second time beside it. Two codes under one heading is a
+  // guess for whoever scans them, and one of the two is a code the Ministry never signed.
+  const text = lines.filter((l) => !Buffer.isBuffer(l)).join('');
+  assert.ok(!text.includes('ABC123'), "the Authority's payload was re-encoded next to their image");
+  assert.ok(text.includes('Revenue Authority'), 'the image lost its heading');
+});
+
+test("an unreadable Authority QR leaves the rest of the slip intact and prints no code", () => {
+  // The rule everywhere else on this slip: the template prints what it has. A diner standing at
+  // the till with their food paid for is owed paper whatever EIMS sent.
+  const { buildEscposData } = freshPrinter();
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (msg) => warnings.push(String(msg));
+
+  try {
+    for (const broken of ['not a picture at all', base64Png(grid(4, 4, () => true)).slice(0, 20)]) {
+      const lines = buildEscposData(
+        fiscalReceipt({ irn: 'IRN-7', orderNumber: '42', fiscalQrImage: broken }), { lineWidth: 48 });
+      const out = lines.join('');
+
+      assert.ok(!rasterOf(lines), 'a broken image was sent to the printer anyway');
+      assert.ok(!out.includes('Revenue Authority'), 'an empty Authority heading printed over no code');
+      assert.match(out, /IRN-7/, 'the IRN went missing with the image');
+      assert.match(out, /Macchiato/, 'the items went missing with the image');
+      assert.match(out, /TOTAL/, 'the totals went missing with the image');
+      assert.ok(out.includes('\x1DV\x00'), 'the slip was not finished and cut');
+    }
+  } finally {
+    console.warn = realWarn;
+  }
+
+  // Logged, because a fiscal receipt without the Authority's code is a defect nobody at the counter
+  // can see, and this line is the only way somebody finds out.
+  assert.strictEqual(warnings.length, 2, 'a receipt lost its fiscal QR and said nothing about it');
+  for (const line of warnings) {
+    assert.match(line, /order 42/, 'the warning does not say which sale to go and look at');
+    assert.match(line, /IRN-7/);
+    assert.match(line, /without the Authority's QR/);
+  }
+});
+
+test('a slip with no image is byte for byte the slip it always was', () => {
+  // The image path must be invisible to every sale that does not use it, which today is all of
+  // them: nothing is registered, so nothing carries a signedQR.
+  const { buildEscposData } = freshPrinter();
+
+  for (const receipt of [CASH_SALE, ANNEX_SALE, fiscalReceipt({ irn: 'IRN-1', fiscalQr: 'https://esr.mor.gov.et/v/A' })]) {
+    for (const width of [48, 32]) {
+      const lines = buildEscposData(receipt, { lineWidth: width });
+      assert.ok(!rasterOf(lines), 'a slip with no image still sent one');
+      assert.ok(lines.every((l) => typeof l === 'string'), 'a slip with no image is no longer all text');
+    }
+  }
+
+  // And the sanitised text of a slip is unchanged by the presence of an image beside it.
+  const withImage = buildEscposData(fiscalReceipt({ irn: 'IRN-1', fiscalQrImage: SIGNED_QR }), { lineWidth: 48 });
+  const without = buildEscposData(fiscalReceipt({ irn: 'IRN-1' }), { lineWidth: 48 });
+  // Everything but the block the image is the point of: the heading, the two feeds around it and
+  // the centring that holds it. What is left has to be the slip that prints today, unmoved.
+  const textOnly = lines => lines.filter(l => !Buffer.isBuffer(l)).join('')
+    .replace('\n\x1Ba\x01Revenue Authority\n\n\n\x1Ba\x00', '');
+  assert.strictEqual(textOnly(withImage), without.join(''), 'the image moved something else on the paper');
+});
+
+test('the image bytes go to the socket untouched, where the text is sanitised', () => {
+  // toPrintable exists because a byte in an item name is a byte in the command stream. An image is
+  // the one thing on the slip that is bytes on purpose: about half of a raster is above 0x7F and
+  // several of them are ESC and GS, so sanitising it would rewrite the picture the Ministry signed.
+  const { toRawBuffer } = freshPrinter();
+  // 0xA0 and 0xB7 are two rows of dots here and a non-breaking space and a middle dot to the
+  // sanitiser, which folds them to a space and a full stop. Any real raster carries both.
+  const image = Buffer.from([0x1D, 0x76, 0x30, 0x00, 0x01, 0x00, 0x02, 0x00, 0xA0, 0xB7]);
+
+  const raw = toRawBuffer(['Zing Coffee\n', image, '\n']);
+
+  assert.ok(raw.includes(image), 'the raster was altered on its way to the printer');
+  assert.ok(raw.toString('latin1').startsWith('Zing Coffee\n'), 'the text beside it was mangled');
+
+  // The same bytes arriving as text would not have survived, which is the whole reason for the seam.
+  const asText = toRawBuffer([image.toString('latin1')]);
+  assert.notDeepStrictEqual([...asText], [...image], 'the sanitiser is no longer protecting the text path');
+});
+
+/**
+ * Who made the document out, and who took the money.
+ *
+ * ANNEX 1 asks for both — `ያዘጋጀው ስምና ፊርማ / Prepared By` and `የተቀባይ (ሻጭ) ስምና ፊርማ / Receiver Name &
+ * Signature` — because in a restaurant they are two people: the waiter takes the order and carries
+ * the food, the cashier receives the money. The slip named only the cashier, and the waiter it
+ * already had in the payload appeared nowhere near the line that asks for them.
+ */
+
+test('a sale with a waiter and a cashier names both, in the Annex\'s two roles', () => {
+  const { buildEscposData } = freshPrinter();
+  const out = paperOf(buildEscposData(
+    { ...CASH_SALE, waiter: 'Kebede', cashier: 'Sara' }, { lineWidth: 48 }));
+
+  assert.match(out, /Prepared by : +Kebede\n/, 'the waiter is not named as who prepared the document');
+  assert.match(out, /Receiver \(seller\) : +Sara\n/, 'the cashier is not named as who received');
+  assert.ok(out.indexOf('Prepared by') < out.indexOf('Receiver (seller)'), 'the two are in the wrong order');
+});
+
+test('preparedBy still wins where a caller sends one', () => {
+  // The waiter is who the line means when nobody says otherwise, not a replacement for the field.
+  const { buildEscposData } = freshPrinter();
+  const out = paperOf(buildEscposData(
+    { ...CASH_SALE, waiter: 'Kebede', cashier: 'Sara', preparedBy: 'Hanna' }, { lineWidth: 48 }));
+
+  assert.match(out, /Prepared by : +Hanna\n/);
+  assert.ok(!/Prepared by : +Kebede/.test(out), 'the waiter overrode the field a caller sent');
+  assert.match(out, /Waiter : +Kebede\n/, 'the waiter stopped being named at the top of the slip');
+});
+
+test('a counter sale with only a cashier prints the one line, not an empty label', () => {
+  const { buildEscposData } = freshPrinter();
+  const { waiter, ...counter } = { ...CASH_SALE, cashier: 'Sara' };
+  const out = paperOf(buildEscposData(counter, { lineWidth: 48 }));
+
+  assert.match(out, /Receiver \(seller\) : +Sara\n/, 'the cashier is not named');
+  assert.ok(!out.includes('Prepared by'), 'an empty Prepared by printed on a sale with nobody to put there');
+});
+
+test('a sale with neither name prints neither line and no stray blank', () => {
+  const { buildEscposData } = freshPrinter();
+  const { waiter, cashier, ...nobody } = CASH_SALE;
+  const out = paperOf(buildEscposData(nobody, { lineWidth: 48 }));
+
+  assert.ok(!out.includes('Prepared by'));
+  assert.ok(!out.includes('Receiver (seller)'));
 });

@@ -2,6 +2,7 @@ const net    = require('net');
 const fs     = require('fs');
 const { spawn } = require('child_process');
 const { codePageByte, toPrintable, toField } = require('./charset');
+const { fiscalQrRaster } = require('./raster');
 const { amountInWords } = require('./words');
 const discovery = require('./discovery');
 
@@ -202,7 +203,15 @@ function isSold(receipt) {
 
 function withoutUnsoldCodes(receipt) {
     if (isSold(receipt)) return receipt;
-    return { ...receipt, irn: undefined, rrn: undefined, fiscalQr: undefined, receiptUrl: undefined };
+    // fiscalQrImage is here with the rest of them. It is the Authority's code in its strongest
+    // form — a picture they signed, which their app validates against their records — so a bill
+    // carrying one would be the one thing on an unpaid slip claiming a sale that has not happened.
+    return {
+        ...receipt,
+        irn: undefined, rrn: undefined,
+        fiscalQr: undefined, fiscalQrImage: undefined,
+        receiptUrl: undefined
+    };
 }
 
 /**
@@ -652,13 +661,21 @@ function buildEscposData(receipt, opts = {}) {
 
     // `ያዘጋጀው ስምና ፊርማ / Prepared By` and `የተቀባይ (ሻጭ) ስምና ፊርማ / Receiver Name & Signature`.
     //
-    // The whole block hangs on preparedBy, which is the field a caller sending Annex data sends and
-    // nothing sends today. Without it the receiver line would be the cashier's name printed a second
-    // time under a heading nobody asked for — the slip already names the cashier at the top — and
-    // the Annex's signature rules would be two blank lines on a thermal slip that nobody signs.
-    if (receipt.preparedBy) {
+    // The Annex asks for two people because a restaurant has two: the waiter takes the order and
+    // carries the food, the cashier receives the money, and on a busy evening they are never the
+    // same person. The block used to hang entirely on preparedBy, a field no caller sends, so the
+    // slip named the cashier at the top and nobody at all in the place the Annex asks who made the
+    // document out — while the waiter who did was already in the payload and printed nowhere near
+    // it. So preparedBy still wins where a caller sends it, and the waiter is who it means when
+    // nobody does.
+    //
+    // Each line stands on its own value, as every other field on this slip does. A sale rung up at
+    // the counter by one person has no waiter, and the right paper for it names the cashier once
+    // rather than printing an empty heading above them.
+    const preparedBy = receipt.preparedBy || receipt.waiter;
+    if (preparedBy || receipt.cashier) {
         lines.push("\n");
-        formatLabelled("Prepared by", receipt.preparedBy).forEach(l => lines.push(l));
+        if (preparedBy) formatLabelled("Prepared by", preparedBy).forEach(l => lines.push(l));
         if (receipt.cashier) formatLabelled("Receiver (seller)", receipt.cashier).forEach(l => lines.push(l));
     }
 
@@ -666,7 +683,7 @@ function buildEscposData(receipt, opts = {}) {
 
     // Art 4(3)(c): the IRN, the RRN and the QR the Authority issued for this sale — or, once the
     // directive is in force and it has issued none, the fact that it has not. See fiscalLines.
-    fiscalLines(receipt, centerLines, formatInfoLine).forEach(l => lines.push(l));
+    fiscalLines(receipt, centerLines, formatInfoLine, LINE_WIDTH).forEach(l => lines.push(l));
 
     // Art 22(5)(c): a reprint says so at both ends, so neither half of a torn slip passes for the
     // original. The fiscal notice is already repeated by fiscalLines above, and the bill title is
@@ -898,11 +915,54 @@ const GS = '\x1D';
 const QR_MAX_PAYLOAD = 2331;
 
 /**
+ * A built slip, turned into the bytes that go down the socket.
+ *
+ * Nearly everything a builder emits is a string, and a string gets the same two steps it has always
+ * had: toPrintable before latin1, not instead of it. latin1 maps each character to one byte, which
+ * is what raw ESC/POS needs — but it maps Ethiopic and typographic characters to whatever byte sits
+ * at that value, so an Amharic item name printed as line noise on a fiscal document. Control bytes
+ * are all below 0x80 and pass through untouched, so this is safe to apply to a whole run of text
+ * rather than to each field.
+ *
+ * An image is the exception, and it is kept an exception on purpose. The Authority's QR is a raster
+ * whose bytes are pixels: roughly half of them are above 0x7F, several are ESC and GS, and every
+ * one of them means a row of dots rather than a character. Putting that through toPrintable would
+ * transliterate the picture — the same sanitiser that protects the text stream from a forged
+ * command would quietly rewrite the code the Ministry signed. So a builder that has image bytes
+ * pushes a Buffer, this concatenates it untouched, and the two kinds never meet: text is sanitised
+ * because somebody typed it, image bytes are not because nobody can type one.
+ */
+function toRawBuffer(data) {
+    const parts = [];
+    let text = '';
+    const flush = () => {
+        if (!text) return;
+        parts.push(Buffer.from(toPrintable(text), 'latin1'));
+        text = '';
+    };
+
+    for (const piece of data) {
+        if (Buffer.isBuffer(piece)) {
+            flush();
+            parts.push(piece);
+        } else {
+            text += piece;
+        }
+    }
+    flush();
+
+    return Buffer.concat(parts);
+}
+
+/**
  * The Authority's QR code, in the printer's own hardware encoder.
  *
  * Art 4(1)(d) requires the QR printed or displayed legibly. GS ( k is the ESC/POS QR family and
- * every printer that has a QR engine implements it; the alternative is rasterising one here and
- * sending GS v 0, which needs an encoder in the bridge and prints worse.
+ * every printer that has a QR engine implements it; the alternative is encoding one here and
+ * sending it as a raster, which needs a QR encoder in the bridge and prints worse. That is the
+ * right trade for a payload that is ours to encode, which the diner's receipt link is. It is not
+ * the right trade for the Authority's code, which arrives already drawn and must not be redrawn;
+ * see authorityQrRaster below.
  *
  * Four commands, in this order and no other: select model, set module size, set error correction,
  * store the payload, print what was stored.
@@ -956,6 +1016,42 @@ function qrLines(payload, moduleSize = 6) {
         GS_K + pL + pH + '\x31\x50\x30' + data,                    // store payload
         GS_K + '\x03\x00\x31\x51\x30'                            // print it
     ];
+}
+
+/**
+ * The Authority's own QR, printed as the picture they signed rather than re-drawn from its text.
+ *
+ * EIMS returns `signedQR` with every registered sale: a 600x600 PNG at error correction H that the
+ * Authority has already drawn, whose content is signed by them and is what their official app
+ * checks against their records. qrLines above cannot be used for it. Handing the payload to the
+ * printer's encoder produces a different image — another mask, another version, another error
+ * correction — and printing the payload as a line of text produces nothing that scans at all.
+ * Their acceptance suite ends every case by scanning the code on the invoice, so either of those is
+ * a slip that fails every test in it. So the image goes on the paper as a raster; see src/raster.js
+ * for how, and why the scaling is what it is.
+ *
+ * A bad image is not a reason to refuse somebody their receipt. The rule everywhere else on this
+ * slip is that the template prints what it has — an absent VAT number, an absent waiter, an absent
+ * buyer all leave no trace rather than a 400 — and a diner standing at the till with their food
+ * paid for is owed paper whatever EIMS sent. So this returns nothing and the slip prints without a
+ * code.
+ *
+ * It is still a defect. A fiscal receipt without the Authority's QR is not a fiscal receipt under
+ * Art 4(3)(c), and nobody at the counter can tell by looking that it should have had one, so the
+ * only way anybody finds out is this line. It names the order and the IRN, because what the person
+ * reading the log needs is the sale to go and look at.
+ */
+function authorityQrRaster(receipt, lineWidth) {
+    if (!receipt.fiscalQrImage) return null;
+    try {
+        return fiscalQrRaster(receipt.fiscalQrImage, lineWidth);
+    } catch (err) {
+        console.warn(
+            `[printer] order ${toField(receipt.orderNumber, 40)} (IRN ${toField(receipt.irn, 64)}) ` +
+            `printed without the Authority's QR: ${err.message}`
+        );
+        return null;
+    }
 }
 
 /**
@@ -1092,19 +1188,26 @@ function statusBanners(receipt, centerLines, opts = {}) {
  * The Authority's QR is printed only with an IRN. The three are issued together, and a Revenue
  * Authority code under a "not registered" notice would be the one thing on the slip that
  * contradicts it.
+ *
+ * Where EIMS sent the code as a signed image it is that image that prints, and the payload beside
+ * it is not encoded a second time: two codes under one heading is a guess for whoever scans them,
+ * and only one of the two was ever signed. An image that cannot be read prints nothing, which is
+ * also why the heading is decided together with the code rather than before it.
  */
-function fiscalLines(receipt, centerLines, formatInfoLine) {
+function fiscalLines(receipt, centerLines, formatInfoLine, lineWidth) {
     const out = [];
 
     if (fiscallyRegistered(receipt)) {
         out.push(formatInfoLine('IRN', receipt.irn));
         if (receipt.rrn) out.push(formatInfoLine('RRN', receipt.rrn));
 
-        if (receipt.fiscalQr) {
+        const image = authorityQrRaster(receipt, lineWidth);
+        if (image || (!receipt.fiscalQrImage && receipt.fiscalQr)) {
             out.push('\n');
             out.push(ESC + 'a' + '\x01');
             centerLines('Revenue Authority').forEach(l => out.push(l));
-            qrLines(receipt.fiscalQr).forEach(l => out.push(l));
+            if (image) out.push(image, '\n');
+            else qrLines(receipt.fiscalQr).forEach(l => out.push(l));
             out.push('\n');
             out.push(ESC + 'a' + '\x00');
         }
@@ -1166,14 +1269,7 @@ function printReceipt(receipt, station) {
         feedLines: 4
     });
 
-    // toPrintable before latin1, not instead of it. latin1 maps each character to one byte, which is
-    // what raw ESC/POS needs — but it maps Ethiopic and typographic characters to whatever byte sits
-    // at that value, so an Amharic item name printed as line noise on a fiscal document. Control
-    // bytes are all below 0x80 and pass through untouched, so this is safe to apply to the whole
-    // stream rather than to each field.
-    const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
-
-    return send(rawBuffer, target, station);
+    return send(toRawBuffer(data), target, station);
 }
 
 const WALLET_NAMES = {
@@ -1222,6 +1318,7 @@ module.exports = {
     parseStations,
     resolveStation,
     buildEscposData,
+    toRawBuffer,
     withoutUnsoldCodes,
     stations: () => STATIONS,
     // Configured, or found: a box with a printer plugged in and nothing in .env is set up.
@@ -1429,7 +1526,7 @@ function printTicket(ticket, address) {
         cut: target.cut,
         codepage: target.codepage
     });
-    const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
+    const rawBuffer = toRawBuffer(data);
     return send(rawBuffer, target, ticket.station);
 }
 
@@ -1610,7 +1707,7 @@ function printCreditNote(note) {
         autoCut: true,
         feedLines: 4
     });
-    const rawBuffer = Buffer.from(toPrintable(data.join('')), 'latin1');
+    const rawBuffer = toRawBuffer(data);
     return send(rawBuffer, target);
 }
 
@@ -1806,7 +1903,7 @@ function testPageBuffer(target, mode, address) {
         cut: target.cut,
         codepage: target.codepage
     });
-    const buffer = Buffer.from(toPrintable(data.join('')), 'latin1');
+    const buffer = toRawBuffer(data);
 
     return { info: { ...info, bytes: buffer.length }, buffer };
 }

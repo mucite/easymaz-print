@@ -199,6 +199,18 @@ const PrintPayloadSchema = z.object({
     irn: optionalText,
     rrn: optionalText,
     fiscalQr: optionalText,
+    /**
+     * The Authority's QR as the Authority drew it: EIMS returns `signedQR`, a 600x600 PNG at error
+     * correction H, base64-encoded, and that image is what their official app validates against
+     * their records. It is not the same thing as fiscalQr above, which is the content. Encoding
+     * that content into a code of our own produces a picture the Ministry never signed, so where
+     * this is present it is what prints.
+     *
+     * Not length-capped here. The cap belongs where the image is read, which knows what a QR code
+     * can plausibly weigh; a cap in the schema would reject the whole job over a bad image rather
+     * than print the slip without the code, which is the wrong answer for a diner who has paid.
+     */
+    fiscalQrImage: optionalText,
     fiscalState: optionalText,
     // Whether Directive 1142/2026 has commenced for this deployment. Until it has, a slip without an
     // IRN is an ordinary receipt under the rules that apply today, and says nothing about it.

@@ -175,3 +175,10 @@ Text in a payload is data and never reaches the printer as a command: control by
 an order note, a buyer's name or a credit note's reason are replaced with spaces on the way into a
 line, and each field is capped. A dish name holding `ESC p` would otherwise have opened the drawer
 from the dining room.
+
+One field is not text. `fiscalQrImage` carries the Authority's own QR code — EIMS returns it as a
+base64 PNG it has already drawn and signed, and their official app validates that image against
+their records, so it cannot be redrawn from its content the way our own receipt link is. It is
+decoded here, scaled to the paper and sent as a `GS v 0` raster, which means its bytes are pixels
+and go to the socket untouched rather than through the sanitiser above. A code that cannot be read
+is logged and the slip prints without it, because a diner who has paid is owed their receipt.

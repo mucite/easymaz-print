@@ -19,6 +19,9 @@ const { spawn } = require('node:child_process');
  * running, or two CI jobs on one runner, do not collide.
  */
 
+const { base64Png, grid } = require(path.join(__dirname, 'png-fixture.js'));
+const { fiscalQrRaster } = require(path.join(__dirname, '..', 'src', 'raster.js'));
+
 const SERVER = path.join(__dirname, '..', 'src', 'server.js');
 const KEY = 'e2e-secret';
 
@@ -320,6 +323,65 @@ describe('a box with a register printer and two stations', () => {
     assert.match(slip, /299/, 'no total');
     // Printed in capitals, as a receipt header is.
     assert.match(slip.toUpperCase(), /TEST KITCHEN/);
+  });
+
+  /**
+   * The Authority's own QR, from the HTTP body to the socket.
+   *
+   * Every other seam this suite watches is text. This one is not: EIMS returns `signedQR` as a
+   * base64 PNG it drew and signed, their app validates that image against their records, and the
+   * bytes that draw it are pixels — about half of them above 0x7F, several of them ESC and GS. The
+   * sanitiser that keeps a dish name from opening the cash drawer would rewrite the picture, and a
+   * rewritten picture is a code that scans to nothing. So this checks the raster arrives whole: the
+   * schema kept the field, the builder emitted GS v 0 at the width the paper takes, and nothing in
+   * between touched the data.
+   */
+  test("the Authority's signed QR arrives at the printer as the image they sent", async () => {
+    register.reset();
+    const image = base64Png(grid(600, 600, (x, y) => Math.floor(x / 24) % 2 === Math.floor(y / 24) % 2));
+    const res = await bridge.post('/print', {
+      ...RECEIPT, jobId: 'j-signed-qr', isPaid: true, paymentStatus: 'PAID',
+      irn: 'IRN-55', rrn: 'RRN-55', fiscalQrImage: image
+    });
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(register), 'the receipt never reached the printer');
+
+    const stream = Buffer.concat(register.streams);
+    const at = stream.indexOf(Buffer.from([0x1D, 0x76, 0x30, 0x00]));
+    assert.ok(at >= 0, 'no raster image reached the printer');
+    assert.strictEqual(stream[at + 4] | (stream[at + 5] << 8), 50, '400 dots across is 50 bytes');
+    assert.strictEqual(stream[at + 6] | (stream[at + 7] << 8), 400, 'the code did not arrive square');
+
+    // The whole raster, not a prefix of one that the sanitiser shortened or folded on its way past.
+    const expected = fiscalQrRaster(image, 48);
+    assert.deepStrictEqual(
+      [...stream.subarray(at, at + expected.length)], [...expected],
+      'the image was altered between the HTTP body and the socket'
+    );
+    assert.match(paper(register), /IRN-55/, 'the image arrived and the identifiers did not');
+  });
+
+  test('a signed QR that cannot be read still prints the receipt, and says so in the log', async () => {
+    // The rule this bridge prints by: the template prints what it has. A diner who has paid is owed
+    // paper whatever EIMS sent — but a fiscal receipt without the Authority's code is a defect
+    // nobody at the counter can see, so the only way anyone finds out is the log.
+    register.reset();
+    const res = await bridge.post('/print', {
+      ...RECEIPT, jobId: 'j-bad-qr', isPaid: true, paymentStatus: 'PAID',
+      irn: 'IRN-56', fiscalQrImage: 'this is not a picture'
+    });
+
+    assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+    assert.ok(await settled(register), 'a bad image stopped the receipt printing');
+
+    const stream = Buffer.concat(register.streams);
+    assert.strictEqual(stream.indexOf(Buffer.from([0x1D, 0x76, 0x30, 0x00])), -1, 'something was printed as a raster');
+    const slip = paper(register);
+    assert.match(slip, /IRN-56/, 'the receipt lost its identifiers with the image');
+    assert.match(slip, /299/, 'the receipt lost its total with the image');
+    assert.doesNotMatch(slip, /Revenue Authority/, 'an empty Authority heading printed over no code');
+    assert.match(bridge.log(), /without the Authority's QR/, 'a fiscal receipt lost its code in silence');
   });
 
   test('the bridge will not print for a stranger', async () => {
